@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect x="0" y="0" width="128" height="128" rx="20" fill="#4a90e2"/>
+  <path d="M64 32 L96 64 L84 64 L84 96 L44 96 L44 64 L32 64 Z" fill="white" transform="rotate(180 64 64)"/>
+  <text x="64" y="55" font-family="Arial" font-size="24" fill="white" text-anchor="middle" font-weight="bold">GEM</text>
+</svg>
