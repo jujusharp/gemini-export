@@ -12,6 +12,7 @@ const translations = {
     typeBothHint: "\"Both\" will attempt to download dialogue and canvas content if available.",
     usageHints: "Usage Hints",
     usageHintsText: "• Scroll to the top of the chat before exporting.<br>• Settings are saved automatically.<br>• Click the floating <b>Export</b> button on the page to specific download.",
+    language: "Language",
     settingsSaved: "Settings saved"
   },
   zh: {
@@ -26,34 +27,60 @@ const translations = {
     typeBothHint: "“组合”模式将尝试同时下载对话内容和 Canvas 内容(如有)。",
     usageHints: "使用提示",
     usageHintsText: "• 导出前建议先滚动到对话顶部。<br>• 设置会自动保存。<br>• 点击页面右侧悬浮的 <b>Export</b> 按钮开始下载。",
+
+    language: "语言",
     settingsSaved: "设置已保存"
   }
 };
 
-const lang = navigator.language.startsWith('zh') ? 'zh' : 'en';
-const t = translations[lang];
+let lang = navigator.language.startsWith('zh') ? 'zh' : 'en';
+let t = translations[lang];
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Apply Translations
-  applyTranslations();
-
   // Defaults
   const defaults = {
     exportFormat: 'md',
-    exportType: 'both' // Default to Both
+    exportType: 'both',
+    language: lang // Default to browser language
   };
 
   // Load saved settings
   const data = await chrome.storage.local.get(defaults);
 
+  // Update language based on saved setting
+  if (data.language && translations[data.language]) {
+    lang = data.language;
+    t = translations[lang];
+  }
+
+  // Apply Translations
+  applyTranslations();
+
   // Apply to UI
   setRadioValue('exportFormat', data.exportFormat);
   setRadioValue('exportType', data.exportType);
+  setRadioValue('language', lang);
 
   // Add event listeners for auto-save
   setupRadioListeners('exportFormat');
   setupRadioListeners('exportType');
+  setupLanguageListeners();
 });
+
+function setupLanguageListeners() {
+  const radios = document.querySelectorAll('input[name="language"]');
+  radios.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      const newLang = e.target.value;
+      if (translations[newLang]) {
+        lang = newLang;
+        t = translations[lang];
+        applyTranslations();
+        saveSetting('language', newLang);
+      }
+    });
+  });
+}
 
 function applyTranslations() {
   document.querySelectorAll('[data-i18n]').forEach(el => {
