@@ -2,6 +2,8 @@
 
 A Chrome Extension that allows users to export their current Gemini chat history to local storage. Supports exporting as Markdown and JSON formats, with each conversation saved as a separate file.
 
+![Gemini Export Screenshot](assets/screen.webp)
+
 ## Features
 
 - **Bulk Export**: Export current historical chats in one click.
