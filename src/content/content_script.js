@@ -413,7 +413,7 @@
     function getProjectName() {
         try {
             // Updated to prioritize conversation title as requested
-            const titleElement = document.querySelector('.conversation-title');
+            const titleElement = document.querySelector('.top-bar-actions .conversation-title, .selected  .conversation-title');
             if (titleElement && titleElement.textContent && titleElement.textContent.trim()) {
                 const cleanName = titleElement.textContent.trim().replace(/[\\/:\*\?"<>\|]/g, '_');
                 if (cleanName) return cleanName;
