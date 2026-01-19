@@ -71,6 +71,93 @@
         }
     };
 
+    // --- HTML to Markdown 转换 (使用 Turndown 库) ---
+    let turndownService = null;
+
+    function initTurndown() {
+        if (turndownService) return turndownService;
+
+        if (typeof TurndownService === 'undefined') {
+            console.warn('Turndown library not loaded, falling back to plain text extraction');
+            return null;
+        }
+
+        turndownService = new TurndownService({
+            headingStyle: 'atx',
+            codeBlockStyle: 'fenced',
+            emDelimiter: '*',
+            bulletListMarker: '-'
+        });
+
+        // 自定义规则：处理 Gemini 代码块
+        turndownService.addRule('geminiCodeBlock', {
+            filter: function (node) {
+                return node.nodeName === 'CODE-BLOCK' ||
+                    (node.nodeName === 'PRE' && node.querySelector('code')) ||
+                    node.classList?.contains('code-block');
+            },
+            replacement: function (content, node) {
+                const codeEl = node.querySelector('code') || node;
+                const language = codeEl.getAttribute('data-lang') ||
+                    codeEl.className?.match(/language-(\w+)/)?.[1] || '';
+                const code = codeEl.textContent || content;
+                return '\n```' + language + '\n' + code.trim() + '\n```\n';
+            }
+        });
+
+        // 自定义规则：保留 pre 标签内的代码
+        turndownService.addRule('preCode', {
+            filter: ['pre'],
+            replacement: function (content, node) {
+                const codeEl = node.querySelector('code');
+                if (codeEl) {
+                    const language = codeEl.getAttribute('data-lang') ||
+                        codeEl.className?.match(/language-(\w+)/)?.[1] || '';
+                    return '\n```' + language + '\n' + codeEl.textContent.trim() + '\n```\n';
+                }
+                return '\n```\n' + node.textContent.trim() + '\n```\n';
+            }
+        });
+
+        // 自定义规则：处理 Gemini 的 markdown 容器
+        turndownService.addRule('geminiMarkdown', {
+            filter: function (node) {
+                return node.classList?.contains('markdown') ||
+                    node.classList?.contains('model-response-text');
+            },
+            replacement: function (content) {
+                return content;
+            }
+        });
+
+        console.log('Turndown initialized with custom Gemini rules');
+        return turndownService;
+    }
+
+    /**
+     * 将 HTML 元素转换为 Markdown 格式
+     * @param {Element} element - DOM 元素
+     * @returns {string} - Markdown 格式的文本
+     */
+    function htmlToMarkdown(element) {
+        if (!element) return '';
+
+        const td = initTurndown();
+        if (!td) {
+            // 回退到 innerText
+            return element.innerText?.trim() || '';
+        }
+
+        try {
+            // 获取 HTML 内容并转换
+            const html = element.innerHTML || element.outerHTML;
+            return td.turndown(html);
+        } catch (e) {
+            console.warn('HTML to Markdown conversion failed, falling back to innerText:', e);
+            return element.innerText?.trim() || '';
+        }
+    }
+
     // --- Language & Translations ---
     const lang = navigator.language.startsWith('zh') ? 'zh' : 'en';
     const t = {
@@ -518,7 +605,11 @@
             if (modelRoot) {
                 if (!info.responseText) {
                     const md = modelRoot.querySelector(SELECTORS.modelMarkdown);
-                    if (md && md.innerText.trim()) { info.responseText = md.innerText.trim(); changed = true; }
+                    if (md && md.innerText.trim()) {
+                        info.responseText = md.innerText.trim();
+                        info.responseHtml = md; // 存储 HTML 元素引用，用于 Markdown 导出
+                        changed = true;
+                    }
                 }
                 if (!info.thoughtText) {
                     const thoughts = modelRoot.querySelector(SELECTORS.modelThoughts);
@@ -623,10 +714,19 @@
             return;
         }
 
-        // Read settings from storage
-        const settings = await chrome.storage.local.get(['exportFormat', 'exportType']);
-        const format = settings.exportFormat || 'md';
-        const type = settings.exportType || 'both'; // Default to Both as requested
+        // Read settings from storage with fallback
+        let format = 'md';
+        let type = 'both';
+
+        try {
+            if (chrome && chrome.storage && chrome.storage.local) {
+                const settings = await chrome.storage.local.get(['exportFormat', 'exportType']);
+                format = settings.exportFormat || 'md';
+                type = settings.exportType || 'both';
+            }
+        } catch (e) {
+            console.warn('Failed to read settings from chrome.storage, using defaults:', e);
+        }
 
         // Update global format var for existing logic compatibility
         window.__GEMINI_EXPORT_FORMAT = format;
@@ -715,7 +815,8 @@
                         type: 'code',
                         index: canvasData.length + 1,
                         content: trimmedContent,
-                        language: block.querySelector('[data-lang]')?.getAttribute('data-lang') || 'unknown'
+                        language: block.querySelector('[data-lang]')?.getAttribute('data-lang') || 'unknown',
+                        htmlElement: block // 存储 HTML 元素引用
                     });
                 }
             }
@@ -736,7 +837,8 @@
                         canvasData.push({
                             type: 'text',
                             index: canvasData.length + 1,
-                            content: trimmedContent
+                            content: trimmedContent,
+                            htmlElement: element // 存储 HTML 元素引用
                         });
                     }
                 }
@@ -755,7 +857,8 @@
                         canvasData.push({
                             type: 'full_content',
                             index: 1,
-                            content: trimmedContent
+                            content: trimmedContent,
+                            htmlElement: chatContainer // 存储 HTML 元素引用
                         });
                     }
                 }
@@ -808,11 +911,24 @@
             canvasData.forEach((item, idx) => {
                 md += `${t.mdContentBlock(idx + 1)}\n\n`;
                 if (item.type === 'code') {
+                    // 代码块直接保持原格式
                     md += `${t.mdCodeBlock(item.language)}\n\n\`\`\`${item.language}\n${item.content}\n\`\`\`\n\n`;
                 } else if (item.type === 'text') {
-                    md += `${t.mdTextBlock}\n\n${escapeMd(item.content)}\n\n`;
+                    // 使用 htmlToMarkdown 转换文本内容
+                    if (item.htmlElement) {
+                        const convertedMd = htmlToMarkdown(item.htmlElement);
+                        md += `${t.mdTextBlock}\n\n${convertedMd}\n\n`;
+                    } else {
+                        md += `${t.mdTextBlock}\n\n${escapeMd(item.content)}\n\n`;
+                    }
                 } else {
-                    md += `${t.mdFullContent}\n\n${escapeMd(item.content)}\n\n`;
+                    // full_content 也使用 htmlToMarkdown 转换
+                    if (item.htmlElement) {
+                        const convertedMd = htmlToMarkdown(item.htmlElement);
+                        md += `${t.mdFullContent}\n\n${convertedMd}\n\n`;
+                    } else {
+                        md += `${t.mdFullContent}\n\n${escapeMd(item.content)}\n\n`;
+                    }
                 }
                 md += `---\n\n`;
             });
@@ -1045,7 +1161,18 @@
                     md += `${t.mdTurn(idx + 1)}\n\n`;
                     if (item.userText) md += `${t.mdUser}\n\n${escapeMd(item.userText)}\n\n`;
                     if (item.thoughtText) md += `<details><summary>${t.mdAIThought}</summary>\n\n${escapeMd(item.thoughtText)}\n\n</details>\n\n`;
-                    if (item.responseText) md += `${t.mdAIResponse}\n\n${escapeMd(item.responseText)}\n\n`;
+
+                    // 使用 htmlToMarkdown 转换 AI 回复，保留格式
+                    if (item.responseHtml) {
+                        const responseMd = htmlToMarkdown(item.responseHtml);
+                        md += `${t.mdAIResponse}\n\n${responseMd}\n\n`;
+                    } else if (item.responseHtmlElements && item.responseHtmlElements.length > 0) {
+                        const responseMd = item.responseHtmlElements.map(el => htmlToMarkdown(el)).join('\n\n');
+                        md += `${t.mdAIResponse}\n\n${responseMd}\n\n`;
+                    } else if (item.responseText) {
+                        md += `${t.mdAIResponse}\n\n${escapeMd(item.responseText)}\n\n`;
+                    }
+
                     md += `---\n\n`;
                 });
             }
@@ -1056,11 +1183,24 @@
                 canvasData.forEach((item, idx) => {
                     md += `${t.mdContentBlock(idx + 1)}\n\n`;
                     if (item.type === 'code') {
+                        // 代码块直接保持原格式
                         md += `${t.mdCodeBlock(item.language)}\n\n\`\`\`${item.language}\n${item.content}\n\`\`\`\n\n`;
                     } else if (item.type === 'text') {
-                        md += `${t.mdTextBlock}\n\n${escapeMd(item.content)}\n\n`;
+                        // 使用 htmlToMarkdown 转换文本内容
+                        if (item.htmlElement) {
+                            const convertedMd = htmlToMarkdown(item.htmlElement);
+                            md += `${t.mdTextBlock}\n\n${convertedMd}\n\n`;
+                        } else {
+                            md += `${t.mdTextBlock}\n\n${escapeMd(item.content)}\n\n`;
+                        }
                     } else {
-                        md += `${t.mdFullContent}\n\n${escapeMd(item.content)}\n\n`;
+                        // full_content 也使用 htmlToMarkdown 转换
+                        if (item.htmlElement) {
+                            const convertedMd = htmlToMarkdown(item.htmlElement);
+                            md += `${t.mdFullContent}\n\n${convertedMd}\n\n`;
+                        } else {
+                            md += `${t.mdFullContent}\n\n${escapeMd(item.content)}\n\n`;
+                        }
                     }
                     md += `---\n\n`;
                 });
@@ -1123,21 +1263,22 @@
 
                 if (!extractedInfo.responseText) {
                     const responseChunks = Array.from(turn.querySelectorAll('.turn-content > ms-prompt-chunk'));
-                    const responseTexts = responseChunks
+                    const responseElements = responseChunks
                         .filter(chunk => !chunk.querySelector('.thought-container'))
-                        .map(chunk => {
-                            const cmarkNode = chunk.querySelector('ms-cmark-node');
-                            return cmarkNode ? cmarkNode.innerText.trim() : chunk.innerText.trim();
-                        })
-                        .filter(text => text);
+                        .map(chunk => chunk.querySelector('ms-cmark-node') || chunk)
+                        .filter(el => el && el.innerText?.trim());
+
+                    const responseTexts = responseElements.map(el => el.innerText.trim());
 
                     if (responseTexts.length > 0) {
                         extractedInfo.responseText = responseTexts.join('\n\n');
+                        extractedInfo.responseHtmlElements = responseElements; // 存储 HTML 元素引用
                         dataWasUpdatedThisTime = true;
                     } else if (!extractedInfo.thoughtText) {
                         const turnContent = turn.querySelector('.turn-content');
                         if (turnContent) {
                             extractedInfo.responseText = turnContent.innerText.trim();
+                            extractedInfo.responseHtmlElements = [turnContent];
                             dataWasUpdatedThisTime = true;
                         }
                     }
@@ -1283,14 +1424,28 @@
             });
             return { blob: new Blob([JSON.stringify(arr, null, 2)], { type: 'application/json;charset=utf-8' }), filename: `${base}.json` };
         }
-        if (mode === 'md') { // 正式 Markdown 格式
+        if (mode === 'md') { // 正式 Markdown 格式 - 使用 Turndown 转换
             let md = `${t.mdHeaderScroll(projectName, context)}\n\n`;
             md += `${t.mdExportTime(ts)}\n\n`;
             deduplicatedData.forEach((item, idx) => {
                 md += `${t.mdTurn(idx + 1)}\n\n`;
                 if (item.userText) md += `${t.mdUser}\n\n${escapeMd(item.userText)}\n\n`;
                 if (item.thoughtText) md += `<details><summary>${t.mdAIThought}</summary>\n\n${escapeMd(item.thoughtText)}\n\n</details>\n\n`;
-                if (item.responseText) md += `${t.mdAIResponse}\n\n${escapeMd(item.responseText)}\n\n`;
+
+                // 使用 htmlToMarkdown 转换 AI 回复，保留格式
+                if (item.responseHtml) {
+                    // Gemini 格式：单个 HTML 元素
+                    const responseMd = htmlToMarkdown(item.responseHtml);
+                    md += `${t.mdAIResponse}\n\n${responseMd}\n\n`;
+                } else if (item.responseHtmlElements && item.responseHtmlElements.length > 0) {
+                    // AI Studio 格式：多个 HTML 元素
+                    const responseMd = item.responseHtmlElements.map(el => htmlToMarkdown(el)).join('\n\n');
+                    md += `${t.mdAIResponse}\n\n${responseMd}\n\n`;
+                } else if (item.responseText) {
+                    // 回退到纯文本
+                    md += `${t.mdAIResponse}\n\n${escapeMd(item.responseText)}\n\n`;
+                }
+
                 md += `---\n\n`;
             });
             return { blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename: `${base}.md` };

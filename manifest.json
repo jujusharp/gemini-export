@@ -31,7 +31,10 @@
   "content_scripts": [
     {
       "matches": ["https://gemini.google.com/*"],
-      "js": ["src/content/content_script.js"]
+      "js": [
+        "src/lib/turndown.min.js",
+        "src/content/content_script.js"
+      ]
     }
   ]
 }
