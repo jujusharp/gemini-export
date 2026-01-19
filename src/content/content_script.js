@@ -89,6 +89,15 @@
             bulletListMarker: '-'
         });
 
+        // 加载 GFM 插件（支持表格、删除线、任务列表）
+        if (typeof turndownPluginGfm !== 'undefined') {
+            const gfm = turndownPluginGfm.gfm;
+            turndownService.use(gfm);
+            console.log('Turndown GFM plugin loaded (tables, strikethrough, tasklists)');
+        } else {
+            console.warn('Turndown GFM plugin not available, tables may not convert properly');
+        }
+
         // 自定义规则：处理 Gemini 代码块
         turndownService.addRule('geminiCodeBlock', {
             filter: function (node) {
@@ -145,17 +154,35 @@
         const td = initTurndown();
         if (!td) {
             // 回退到 innerText
-            return element.innerText?.trim() || '';
+            return cleanupMarkdown(element.innerText?.trim() || '');
         }
 
         try {
             // 获取 HTML 内容并转换
             const html = element.innerHTML || element.outerHTML;
-            return td.turndown(html);
+            const markdown = td.turndown(html);
+            return cleanupMarkdown(markdown);
         } catch (e) {
             console.warn('HTML to Markdown conversion failed, falling back to innerText:', e);
-            return element.innerText?.trim() || '';
+            return cleanupMarkdown(element.innerText?.trim() || '');
         }
+    }
+
+    /**
+     * 清理 Markdown 中的特殊字符
+     * @param {string} text - 原始文本
+     * @returns {string} - 清理后的文本
+     */
+    function cleanupMarkdown(text) {
+        if (!text) return '';
+        return text
+            // 替换不间断空格 (NBSP, 0xa0) 为普通空格
+            .replace(/\u00a0/g, ' ')
+            // 替换零宽空格和其他不可见字符
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')
+            // 规范化多余的空行（最多保留两个连续换行）
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
     }
 
     // --- Language & Translations ---

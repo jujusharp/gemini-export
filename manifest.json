@@ -30,9 +30,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://gemini.google.com/*"],
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
       "js": [
         "src/lib/turndown.min.js",
+        "src/lib/turndown-plugin-gfm.min.js",
         "src/content/content_script.js"
       ]
     }
