@@ -23,7 +23,7 @@ const translations = {
     exportType: "导出类型",
     typeDialog: "仅对话",
     typeCanvas: "仅 Canvas",
-    typeBoth: "组合 (对话+Canvas)",
+    typeBoth: "组合",
     typeBothHint: "“组合”模式将尝试同时下载对话内容和 Canvas 内容(如有)。",
     usageHints: "使用提示",
     usageHintsText: "• 导出前建议先滚动到对话顶部。<br>• 设置会自动保存。<br>• 点击页面右侧悬浮的 <b>Export</b> 按钮开始下载。",
