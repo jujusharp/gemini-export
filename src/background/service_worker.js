@@ -10,6 +10,19 @@ console.log('Gemini Export: Service Worker Loaded');
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'START_EXPORT') {
         handleExport(request.formats, request.tabId);
+        return false;
+    }
+
+    if (request.action === 'DOWNLOAD_IMAGE_BATCH') {
+        handleImageBatchDownload(request.payload)
+            .then((result) => {
+                sendResponse({ status: 'success', ...result });
+            })
+            .catch((error) => {
+                console.error('Image batch download failed:', error);
+                sendResponse({ status: 'error', message: error.message || String(error) });
+            });
+        return true;
     }
 });
 
@@ -127,4 +140,90 @@ function waitForTabLoad(tabId) {
 
 function convertToMarkdown(content, chat) {
     return `# ${chat.title}\n\nURL: ${chat.url}\n\nDate: ${new Date().toLocaleString()}\n\n---\n\n${content.text}`;
+}
+
+function sanitizeFileNameSegment(name) {
+    return (name || 'GeminiChat')
+        .replace(/[\\/:\*\?"<>\|]/g, '_')
+        .replace(/\s+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 60) || 'GeminiChat';
+}
+
+function normalizeImageExtension(ext) {
+    const lower = (ext || '').toLowerCase();
+    if (lower === 'jpeg' || lower === 'pjpeg') return 'jpg';
+    if (lower === 'svg+xml') return 'svg';
+    if (lower === 'x-icon') return 'ico';
+    if (/^[a-z0-9]{2,5}$/.test(lower)) return lower;
+    return 'jpg';
+}
+
+function guessImageExtensionFromUrl(url) {
+    if (!url) return 'jpg';
+
+    const dataUrlMatch = url.match(/^data:image\/([a-zA-Z0-9.+-]+);/i);
+    if (dataUrlMatch) return normalizeImageExtension(dataUrlMatch[1]);
+
+    try {
+        const parsed = new URL(url);
+        const pathExtMatch = parsed.pathname.match(/\.([a-zA-Z0-9]{2,5})$/);
+        if (pathExtMatch) return normalizeImageExtension(pathExtMatch[1]);
+    } catch (_) { }
+
+    const formatMatch = url.match(/[?&](?:format|fm)=([a-zA-Z0-9]{2,5})/i);
+    if (formatMatch) return normalizeImageExtension(formatMatch[1]);
+
+    if (/=s\d+-rj\b/i.test(url) || /=w\d+-h\d+-rj\b/i.test(url)) return 'jpg';
+    if (/webp/i.test(url)) return 'webp';
+    if (/png/i.test(url)) return 'png';
+    return 'jpg';
+}
+
+function buildImageFilename(baseName, timestamp, index, image) {
+    const safeBaseName = sanitizeFileNameSegment(baseName || 'GeminiChat');
+    const safeTimestamp = sanitizeFileNameSegment(timestamp || '').slice(0, 40) ||
+        new Date().toISOString().replace(/[:.]/g, '-');
+    const extension = normalizeImageExtension(image?.extension || guessImageExtensionFromUrl(image?.url || ''));
+    const fileIndex = String(index + 1).padStart(3, '0');
+    return `${safeBaseName}_images_${safeTimestamp}/generated_${fileIndex}.${extension}`;
+}
+
+async function handleImageBatchDownload(payload) {
+    const images = Array.isArray(payload?.images) ? payload.images : [];
+    if (images.length === 0) {
+        return { downloaded: 0, failed: 0, total: 0 };
+    }
+
+    const baseName = payload?.baseName || 'GeminiChat';
+    const timestamp = payload?.timestamp || '';
+
+    let downloaded = 0;
+    let failed = 0;
+
+    for (let i = 0; i < images.length; i++) {
+        const image = images[i] || {};
+        const imageUrl = typeof image.url === 'string' ? image.url.trim() : '';
+        if (!imageUrl || !/^https?:|^data:/i.test(imageUrl)) {
+            failed++;
+            continue;
+        }
+
+        const filename = buildImageFilename(baseName, timestamp, i, image);
+        try {
+            await chrome.downloads.download({
+                url: imageUrl,
+                filename,
+                saveAs: false,
+                conflictAction: 'uniquify'
+            });
+            downloaded++;
+        } catch (e) {
+            failed++;
+            console.warn('Failed to download generated image:', imageUrl, e);
+        }
+    }
+
+    return { downloaded, failed, total: images.length };
 }

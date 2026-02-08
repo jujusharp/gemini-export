@@ -206,7 +206,11 @@
             statusNoCanvas: "No Canvas content found.",
             statusNoDialog: "No chat content collected.",
             statusSuccess: (item) => `Export Success: ${item}`,
+            statusSuccessWithImages: (item, count) => `Export Success: ${item} (Images: ${count})`,
+            statusSuccessWithImageWarning: (item, msg) => `Export Success: ${item} (Image export issue: ${msg})`,
             statusError: (msg) => `Error: ${msg}`,
+            statusDownloadingImages: (count) => `Downloading ${count} generated images...`,
+            statusImagesDownloadFailed: (msg) => `Image export skipped: ${msg}`,
             logStartingExport: (type, format) => `Starting export.. Type: ${type}, Format: ${format}`,
             statusFormatChanged: "Export format changed",
             btnToggleOpen: "<",
@@ -279,7 +283,11 @@
             statusNoCanvas: "未找到 Canvas 内容。",
             statusNoDialog: "未收集到对话内容。",
             statusSuccess: (item) => `导出成功: ${item}`,
+            statusSuccessWithImages: (item, count) => `导出成功: ${item}（图片 ${count} 张）`,
+            statusSuccessWithImageWarning: (item, msg) => `导出成功: ${item}（图片导出异常: ${msg}）`,
             statusError: (msg) => `错误: ${msg}`,
+            statusDownloadingImages: (count) => `正在下载 ${count} 张生成图片...`,
+            statusImagesDownloadFailed: (msg) => `图片导出已跳过: ${msg}`,
             logStartingExport: (type, format) => `开始导出.. 类型: ${type}, 格式: ${format}`,
             statusFormatChanged: "导出格式已切换",
             btnToggleOpen: "<",
@@ -1418,6 +1426,148 @@
         console.log(`[Status] ${message}`);
     }
 
+    function sendRuntimeMessage(request) {
+        return new Promise((resolve, reject) => {
+            try {
+                chrome.runtime.sendMessage(request, (response) => {
+                    const lastError = chrome.runtime.lastError;
+                    if (lastError) {
+                        reject(new Error(lastError.message || 'Unknown runtime error'));
+                        return;
+                    }
+                    resolve(response);
+                });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
+    function sanitizeFileNameSegment(name) {
+        return (name || 'GeminiChat')
+            .replace(/[\\/:\*\?"<>\|]/g, '_')
+            .replace(/\s+/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 60) || 'GeminiChat';
+    }
+
+    function normalizeImageExtension(ext) {
+        const lower = (ext || '').toLowerCase();
+        if (lower === 'jpeg' || lower === 'pjpeg') return 'jpg';
+        if (lower === 'svg+xml') return 'svg';
+        if (lower === 'x-icon') return 'ico';
+        if (/^[a-z0-9]{2,5}$/.test(lower)) return lower;
+        return 'jpg';
+    }
+
+    function guessImageExtensionFromUrl(url) {
+        if (!url) return 'jpg';
+
+        const dataUrlMatch = url.match(/^data:image\/([a-zA-Z0-9.+-]+);/i);
+        if (dataUrlMatch) {
+            return normalizeImageExtension(dataUrlMatch[1]);
+        }
+
+        try {
+            const parsed = new URL(url, window.location.href);
+            const extMatch = parsed.pathname.match(/\.([a-zA-Z0-9]{2,5})$/);
+            if (extMatch) return normalizeImageExtension(extMatch[1]);
+        } catch (_) { }
+
+        const formatMatch = url.match(/[?&](?:format|fm)=([a-zA-Z0-9]{2,5})/i);
+        if (formatMatch) return normalizeImageExtension(formatMatch[1]);
+
+        if (/=s\d+-rj\b/i.test(url) || /=w\d+-h\d+-rj\b/i.test(url)) return 'jpg';
+        if (/webp/i.test(url)) return 'webp';
+        if (/png/i.test(url)) return 'png';
+        return 'jpg';
+    }
+
+    function isProbablyGeneratedImageElement(img) {
+        if (!img) return false;
+
+        const src = img.currentSrc || img.getAttribute('src') || '';
+        if (!src) return false;
+        if (!/^https?:|^data:/i.test(src)) return false;
+
+        if (/maps\.googleapis\.com\/maps\/vt/i.test(src)) return false;
+        if (/gstatic\.com\/images\/branding\/productlogos\/maps/i.test(src)) return false;
+        if (/maps\.gstatic\.com\/mapfiles/i.test(src)) return false;
+
+        if (img.closest('generated-image, single-image.generated-image, .generated-image, .generated-images, .attachment-container.generated-images, .image-container.replace-fife-images-at-export')) {
+            return true;
+        }
+
+        if (/googleusercontent\.com\/gg\//i.test(src)) return true;
+        return false;
+    }
+
+    function extractGeneratedImagesFromDom() {
+        const candidates = Array.from(document.querySelectorAll(
+            'generated-image img[src], .attachment-container.generated-images img[src], .image-container.replace-fife-images-at-export img[src], single-image.generated-image img[src], img.image[src]'
+        ));
+
+        const seen = new Set();
+        const images = [];
+
+        candidates.forEach((img) => {
+            if (!isProbablyGeneratedImageElement(img)) return;
+            const rawSrc = (img.currentSrc || img.getAttribute('src') || '').trim();
+            if (!rawSrc) return;
+
+            let absoluteUrl = rawSrc;
+            try {
+                absoluteUrl = new URL(rawSrc, window.location.href).href;
+            } catch (_) { }
+            if (seen.has(absoluteUrl)) return;
+            seen.add(absoluteUrl);
+
+            images.push({
+                url: absoluteUrl,
+                alt: cleanupMarkdown((img.getAttribute('alt') || '').trim()),
+                extension: guessImageExtensionFromUrl(absoluteUrl)
+            });
+        });
+
+        return images;
+    }
+
+    async function exportGeneratedImages(projectName) {
+        const images = extractGeneratedImagesFromDom();
+        if (!images.length) return { downloaded: 0, failed: 0, total: 0 };
+
+        updateStatus(t.statusDownloadingImages(images.length));
+
+        try {
+            const response = await sendRuntimeMessage({
+                action: 'DOWNLOAD_IMAGE_BATCH',
+                payload: {
+                    baseName: sanitizeFileNameSegment(projectName),
+                    timestamp: getCurrentTimestamp(),
+                    images
+                }
+            });
+
+            if (!response || response.status !== 'success') {
+                throw new Error(response?.message || 'No response from background service worker');
+            }
+
+            if (Number(response.failed || 0) > 0 && Number(response.downloaded || 0) === 0) {
+                throw new Error(`All image downloads failed (${response.failed})`);
+            }
+
+            return {
+                downloaded: Number(response.downloaded || 0),
+                failed: Number(response.failed || 0),
+                total: images.length
+            };
+        } catch (e) {
+            console.warn('Generated image export failed:', e);
+            return { downloaded: 0, failed: images.length, total: images.length, error: e };
+        }
+    }
+
 
     // --- 核心业务逻辑 (滚动导出) ---
 
@@ -1607,6 +1757,7 @@
 
         try {
             updateStatus(t.statusStep1);
+            const projectName = getProjectName();
             const canvasData = extractCanvasContent();
 
             if (canvasData.length === 0) {
@@ -1625,7 +1776,14 @@
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
 
-                updateStatus(t.statusSuccess(exportData.filename));
+                const imageExport = await exportGeneratedImages(projectName);
+                if (imageExport.downloaded > 0) {
+                    updateStatus(t.statusSuccessWithImages(exportData.filename, imageExport.downloaded));
+                } else if (imageExport.error) {
+                    updateStatus(t.statusSuccessWithImageWarning(exportData.filename, imageExport.error.message));
+                } else {
+                    updateStatus(t.statusSuccess(exportData.filename));
+                }
             }
         } catch (error) {
             console.error('Canvas Error:', error);
@@ -1642,6 +1800,7 @@
     // 组合导出功能：同时导出对话和Canvas内容
     async function handleCombinedExtraction() {
         console.log("Starting Combined Export...");
+        const projectName = getProjectName();
 
         // This is a scrolling operation, allow stop
         exportButton.title = t.btnStop;
@@ -1700,7 +1859,14 @@
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
-            updateStatus(t.statusSuccess(combinedData.filename));
+            const imageExport = await exportGeneratedImages(projectName);
+            if (imageExport.downloaded > 0) {
+                updateStatus(t.statusSuccessWithImages(combinedData.filename, imageExport.downloaded));
+            } else if (imageExport.error) {
+                updateStatus(t.statusSuccessWithImageWarning(combinedData.filename, imageExport.error.message));
+            } else {
+                updateStatus(t.statusSuccess(combinedData.filename));
+            }
             exportButton.title = t.btnSuccess;
 
         } catch (error) {
@@ -2115,8 +2281,9 @@
             return { blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename: `${base}.md` };
         }
     }
-    function formatAndTriggerDownloadScroll() {
+    async function formatAndTriggerDownloadScroll() {
         updateStatus(t.logGeneratingFile(collectedData.size));
+        const projectName = getProjectName();
         let sorted = [];
         if (document.querySelector('#chat-history .conversation-container')) {
             const cs = document.querySelectorAll('#chat-history .conversation-container');
@@ -2138,6 +2305,14 @@
             const a = document.createElement('a');
             const url = URL.createObjectURL(pack.blob);
             a.href = url; a.download = pack.filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+            const imageExport = await exportGeneratedImages(projectName);
+            if (imageExport.downloaded > 0) {
+                updateStatus(t.statusSuccessWithImages(pack.filename, imageExport.downloaded));
+            } else if (imageExport.error) {
+                updateStatus(t.statusSuccessWithImageWarning(pack.filename, imageExport.error.message));
+            } else {
+                updateStatus(t.statusSuccess(pack.filename));
+            }
             exportButton.title = t.btnSuccess;
         } catch (e) {
             console.error('File generation failed:', e);
@@ -2182,7 +2357,7 @@
                 await delay(500);
                 extractDataIncremental_AiStudio();
                 await delay(200);
-                formatAndTriggerDownloadScroll();
+                await formatAndTriggerDownloadScroll();
             } else {
                 exportButton.title = t.btnFailed;
                 setTimeout(() => {
