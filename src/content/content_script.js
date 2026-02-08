@@ -8,12 +8,6 @@
         document.head.appendChild(style);
     };
 
-    const GM_setClipboard = (text) => {
-        navigator.clipboard.writeText(text).catch(err => {
-            console.error('Failed to copy to clipboard', err);
-        });
-    };
-
     // Listen for messages from the popup
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === 'TOGGLE_PANEL') {
@@ -29,320 +23,48 @@
         // Return true if we want to sendResponse asynchronously, but here we are synchronous
     });
 
-    if (window.trustedTypes && window.trustedTypes.createPolicy) {
-        try {
-            // 尝试创建默认策略
-            if (!window.trustedTypes.defaultPolicy) {
-                window.trustedTypes.createPolicy('default', {
-                    createHTML: (string) => string,
-                    createScript: (string) => string,
-                    createScriptURL: (string) => string
-                });
-            }
-        } catch (e) {
-            // 如果默认策略已存在，创建备用策略
-            try {
-                window.trustedTypes.createPolicy('userscript-fallback', {
-                    createHTML: (string) => string,
-                    createScript: (string) => string,
-                    createScriptURL: (string) => string
-                });
-            } catch (e2) {
-                console.warn('TrustedTypes 策略创建失败，但脚本将继续运行', e2);
-            }
-        }
-    }
+    window.GeminiExportBootstrap?.setupTrustedTypes?.();
 
-    // 额外的DOM操作安全包装
-    const safeSetInnerHTML = (element, html) => {
-        try {
-            if (window.trustedTypes && window.trustedTypes.createPolicy) {
-                const policy = window.trustedTypes.defaultPolicy ||
-                    window.trustedTypes.createPolicy('temp-policy', {
-                        createHTML: (string) => string
-                    });
-                element.innerHTML = policy.createHTML(html);
-            } else {
-                element.innerHTML = html;
-            }
-        } catch (e) {
-            // 回退到textContent
-            element.textContent = html.replace(/<[^>]*>/g, '');
-        }
-    };
+    // --- HTML to Markdown 转换 ---
+    let markdownConverter = null;
 
-    // --- HTML to Markdown 转换 (使用 Turndown 库) ---
-    let turndownService = null;
+    function getMarkdownConverter() {
+        if (markdownConverter) return markdownConverter;
 
-    function initTurndown() {
-        if (turndownService) return turndownService;
-
-        if (typeof TurndownService === 'undefined') {
-            console.warn('Turndown library not loaded, falling back to plain text extraction');
+        const factory = window.GeminiExportMarkdown?.createMarkdownConverter;
+        if (typeof factory !== 'function') {
+            console.warn('Gemini Export: markdown converter module not loaded.');
             return null;
         }
 
-        turndownService = new TurndownService({
-            headingStyle: 'atx',
-            codeBlockStyle: 'fenced',
-            emDelimiter: '*',
-            bulletListMarker: '-'
-        });
-
-        // 加载 GFM 插件（支持表格、删除线、任务列表）
-        if (typeof turndownPluginGfm !== 'undefined') {
-            const gfm = turndownPluginGfm.gfm;
-            turndownService.use(gfm);
-            console.log('Turndown GFM plugin loaded (tables, strikethrough, tasklists)');
-        } else {
-            console.warn('Turndown GFM plugin not available, tables may not convert properly');
-        }
-
-        // 自定义规则：处理 Gemini 代码块
-        turndownService.addRule('geminiCodeBlock', {
-            filter: function (node) {
-                return node.nodeName === 'CODE-BLOCK' ||
-                    (node.nodeName === 'PRE' && node.querySelector('code')) ||
-                    node.classList?.contains('code-block');
-            },
-            replacement: function (content, node) {
-                const codeEl = node.querySelector('code') || node;
-                const language = codeEl.getAttribute('data-lang') ||
-                    codeEl.className?.match(/language-(\w+)/)?.[1] || '';
-                const code = codeEl.textContent || content;
-                return '\n```' + language + '\n' + code.trim() + '\n```\n';
-            }
-        });
-
-        // 自定义规则：保留 pre 标签内的代码
-        turndownService.addRule('preCode', {
-            filter: ['pre'],
-            replacement: function (content, node) {
-                const codeEl = node.querySelector('code');
-                if (codeEl) {
-                    const language = codeEl.getAttribute('data-lang') ||
-                        codeEl.className?.match(/language-(\w+)/)?.[1] || '';
-                    return '\n```' + language + '\n' + codeEl.textContent.trim() + '\n```\n';
-                }
-                return '\n```\n' + node.textContent.trim() + '\n```\n';
-            }
-        });
-
-        // 自定义规则：处理 Gemini 的 markdown 容器
-        turndownService.addRule('geminiMarkdown', {
-            filter: function (node) {
-                return node.classList?.contains('markdown') ||
-                    node.classList?.contains('model-response-text');
-            },
-            replacement: function (content) {
-                return content;
-            }
-        });
-
-        console.log('Turndown initialized with custom Gemini rules');
-        return turndownService;
+        markdownConverter = factory();
+        return markdownConverter;
     }
 
-    /**
-     * 将 HTML 元素转换为 Markdown 格式
-     * @param {Element} element - DOM 元素
-     * @returns {string} - Markdown 格式的文本
-     */
+    function cleanupMarkdown(text) {
+        const converter = getMarkdownConverter();
+        if (converter && typeof converter.cleanupMarkdown === 'function') {
+            return converter.cleanupMarkdown(text);
+        }
+        if (!text) return '';
+        return String(text).trim();
+    }
+
     function htmlToMarkdown(element) {
         if (!element) return '';
 
-        const td = initTurndown();
-        if (!td) {
-            // 回退到 innerText
-            return cleanupMarkdown(element.innerText?.trim() || '');
+        const converter = getMarkdownConverter();
+        if (converter && typeof converter.htmlToMarkdown === 'function') {
+            return converter.htmlToMarkdown(element);
         }
 
-        try {
-            // 获取 HTML 内容并转换
-            const html = element.innerHTML || element.outerHTML;
-            const markdown = td.turndown(html);
-            return cleanupMarkdown(markdown);
-        } catch (e) {
-            console.warn('HTML to Markdown conversion failed, falling back to innerText:', e);
-            return cleanupMarkdown(element.innerText?.trim() || '');
-        }
-    }
-
-    /**
-     * 清理 Markdown 中的特殊字符
-     * @param {string} text - 原始文本
-     * @returns {string} - 清理后的文本
-     */
-    function cleanupMarkdown(text) {
-        if (!text) return '';
-        return text
-            // 替换不间断空格 (NBSP, 0xa0) 为普通空格
-            .replace(/\u00a0/g, ' ')
-            // 替换零宽空格和其他不可见字符
-            .replace(/[\u200B-\u200D\uFEFF]/g, '')
-            // 规范化多余的空行（最多保留两个连续换行）
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
+        return cleanupMarkdown(element.innerText?.trim() || '');
     }
 
     // --- Language & Translations ---
-    const lang = navigator.language.startsWith('zh') ? 'zh' : 'en';
-    const t = {
-        en: {
-            btnExport: "Export",
-            btnStop: "Stop Scanning",
-            btnProcessing: "Processing...",
-            btnFailed: "Failed",
-            btnSuccess: "Success!",
-            btnError: "Error",
-            statusStarting: "Starting export...",
-            statusScanning: "Scanning...",
-            statusStop: "Stopping...",
-            statusReset: "Resetting scroll position...",
-            statusStep1: "Step 1/3: Canvas Content...",
-            statusStep2: "Step 2/3: Dialog Content (Scrolling)...",
-            statusStep3: "Step 3/3: Merging & Exporting...",
-            statusProcessing: (count) => `Processing Data (${count})...`,
-            statusNoCanvas: "No Canvas content found.",
-            statusNoDialog: "No chat content collected.",
-            statusSuccess: (item) => `Export Success: ${item}`,
-            statusSuccessWithImages: (item, count) => `Export Success: ${item} (Images: ${count})`,
-            statusSuccessWithImageWarning: (item, msg) => `Export Success: ${item} (Image export issue: ${msg})`,
-            statusError: (msg) => `Error: ${msg}`,
-            statusDownloadingImages: (count) => `Downloading ${count} generated images...`,
-            statusImagesDownloadFailed: (msg) => `Image export skipped: ${msg}`,
-            logStartingExport: (type, format) => `Starting export.. Type: ${type}, Format: ${format}`,
-            statusFormatChanged: "Export format changed",
-            btnToggleOpen: "<",
-            btnToggleClose: ">",
-            logSelectorsUpdated: "Gemini Export: Updated selectors",
-            logExtractingCanvas: "Extracting Canvas content...",
-            logCanvasExtracted: (count) => `Canvas content extraction complete. Found ${count} items.`,
-            txtCombinedHeader: "Gemini Combined Export (Dialog + Canvas)",
-            txtDialogSection: "=== Dialog Content ===",
-            txtUser: "--- User ---",
-            txtAIThought: "--- AI Thought Chain ---",
-            txtAIResponse: "--- AI Response ---",
-            txtCanvasSection: "=== Canvas Content ===",
-            txtCodeBlock: (index, lang) => `--- Code Block ${index} (${lang}) ---`,
-            txtTextBlock: (index) => `--- Text Block ${index} ---`,
-            txtFullContent: "--- Full Content ---",
-            mdHeaderCanvas: (projectName) => `# ${projectName} Canvas Content Export`,
-            mdExportTime: (ts) => `Export Time: ${ts}`,
-            mdContentBlock: (idx) => `### Content Block ${idx}`,
-            mdCodeBlock: (lang) => `**Code Block** (Language: ${lang}):`,
-            mdTextBlock: "**Text Content**:",
-            mdFullContent: "**Full Content**:",
-            mdHeaderCombined: (projectName) => `# ${projectName} Combined Export`,
-            mdTurn: (idx) => `### Turn ${idx}`,
-            mdUser: "**User**:",
-            mdAIThought: "AI Thought Chain",
-            mdAIResponse: "**AI Response**:",
-            statusWarnNoData: "Warning: Turns found but no data extracted. Check selectors.",
-            statusScrolling: (count, max, collected) => `Scrolling ${count}/${max}... Collected ${collected} items...`,
-            logFindingScroller: "Starting auto-scroll...",
-            statusScrollError: "Error (Scroll): Scroller not found",
-            statusScrollNotFoundAlert: "Could not find scrollable area.",
-            statusScrollCompleteBottom: "Scroll complete (Bottom reached).",
-            statusScrollCompleteTop: "Scroll complete (Returned to top).",
-            statusScrollManualStop: (count) => `Scroll stopped manually (Scrolled ${count} times).`,
-            statusScrollMaxAttempts: (max) => `Scroll stopped: Max attempts reached (${max}).`,
-            txtHeaderScroll: "Gemini Chat History (Scroll Export)",
-            txtHeaderSDK: "Gemini Chat History (SDK)",
-            txtIncompleteTurn: "--- Turn (Incomplete) ---",
-            txtThoughtIncomplete: "Thought (Incomplete):",
-            txtResponseIncomplete: "Response (Incomplete):",
-            mdHeaderScroll: (projectName, context) => `# ${projectName} Chat Export (${context})`,
-            logGeneratingFile: (count) => `Generating file from ${count} items...`,
-            logUICreated: "UI Created",
-            anchorTitle: "Thread",
-            anchorEmpty: "No messages yet",
-            anchorUserShort: "Q",
-            anchorModelShort: "A",
-            anchorUserFallback: "User message",
-            anchorModelFallback: "Model response",
-            anchorExpand: "Expand message anchors",
-            anchorCollapse: "Collapse message anchors",
-            anchorJumpTo: (index) => `Jump to message ${index}`
-        },
-        zh: {
-            btnExport: "导出",
-            btnStop: "停止扫描",
-            btnProcessing: "处理中...",
-            btnFailed: "失败",
-            btnSuccess: "成功!",
-            btnError: "错误",
-            statusStarting: "开始导出...",
-            statusScanning: "扫描中...",
-            statusStop: "正在停止...",
-            statusReset: "重置滚动位置...",
-            statusStep1: "步骤 1/3: 提取 Canvas 内容...",
-            statusStep2: "步骤 2/3: 滚动获取对话内容...",
-            statusStep3: "步骤 3/3: 合并数据并导出...",
-            statusProcessing: (count) => `处理数据 (${count})...`,
-            statusNoCanvas: "未找到 Canvas 内容。",
-            statusNoDialog: "未收集到对话内容。",
-            statusSuccess: (item) => `导出成功: ${item}`,
-            statusSuccessWithImages: (item, count) => `导出成功: ${item}（图片 ${count} 张）`,
-            statusSuccessWithImageWarning: (item, msg) => `导出成功: ${item}（图片导出异常: ${msg}）`,
-            statusError: (msg) => `错误: ${msg}`,
-            statusDownloadingImages: (count) => `正在下载 ${count} 张生成图片...`,
-            statusImagesDownloadFailed: (msg) => `图片导出已跳过: ${msg}`,
-            logStartingExport: (type, format) => `开始导出.. 类型: ${type}, 格式: ${format}`,
-            statusFormatChanged: "导出格式已切换",
-            btnToggleOpen: "<",
-            btnToggleClose: ">",
-            logSelectorsUpdated: "Gemini Export: 选择器已更新",
-            logExtractingCanvas: "开始提取 Canvas 内容...",
-            logCanvasExtracted: (count) => `Canvas 内容提取完成，共找到 ${count} 个内容块（已去重）`,
-            txtCombinedHeader: "Gemini 组合导出 (对话 + Canvas)",
-            txtDialogSection: "=== 对话内容 ===",
-            txtUser: "--- 用户 ---",
-            txtAIThought: "--- AI 思维链 ---",
-            txtAIResponse: "--- AI 回答 ---",
-            txtCanvasSection: "=== Canvas 内容 ===",
-            txtCodeBlock: (index, lang) => `--- 代码块 ${index} (${lang}) ---`,
-            txtTextBlock: (index) => `--- 文本内容 ${index} ---`,
-            txtFullContent: "--- 完整内容 ---",
-            mdHeaderCanvas: (projectName) => `# ${projectName} Canvas 内容导出`,
-            mdExportTime: (ts) => `导出时间：${ts}`,
-            mdContentBlock: (idx) => `### 内容块 ${idx}`,
-            mdCodeBlock: (lang) => `**代码块** (语言: ${lang}):`,
-            mdTextBlock: "**文本内容**:",
-            mdFullContent: "**完整内容**:",
-            mdHeaderCombined: (projectName) => `# ${projectName} 组合导出`,
-            mdTurn: (idx) => `### 回合 ${idx}`,
-            mdUser: "**用户**:",
-            mdAIThought: "AI 思维链",
-            mdAIResponse: "**AI 回答**:",
-            statusWarnNoData: "警告: 发现聊天回合但未能提取数据，请检查选择器。",
-            statusScrolling: (count, max, collected) => `滚动 ${count}/${max}... 已收集 ${collected} 条记录...`,
-            logFindingScroller: "启动自动滚动...",
-            statusScrollError: "错误 (滚动): 找不到滚动区域",
-            statusScrollNotFoundAlert: "未能找到聊天记录的滚动区域。",
-            statusScrollCompleteBottom: "滚动完成 (疑似触底)。",
-            statusScrollCompleteTop: "滚动完成 (返回顶部)。",
-            statusScrollManualStop: (count) => `滚动已手动停止 (已滚动 ${count} 次)。`,
-            statusScrollMaxAttempts: (max) => `滚动停止: 已达到最大尝试次数 (${max})。`,
-            txtHeaderScroll: "Gemini 聊天记录 (滚动采集)",
-            txtHeaderSDK: "Gemini 对话记录 (SDK 代码)",
-            txtIncompleteTurn: "--- 回合 (内容提取不完整或失败) ---",
-            txtThoughtIncomplete: "思维链(可能不全):",
-            txtResponseIncomplete: "回答(可能不全):",
-            mdHeaderScroll: (projectName, context) => `# ${projectName} 对话导出 (${context})`,
-            logGeneratingFile: (count) => `正在处理 ${count} 条记录并生成文件...`,
-            logUICreated: "UI 已创建",
-            anchorTitle: "对话锚点",
-            anchorEmpty: "暂无消息",
-            anchorUserShort: "问",
-            anchorModelShort: "答",
-            anchorUserFallback: "用户消息",
-            anchorModelFallback: "模型回复",
-            anchorExpand: "展开消息锚点",
-            anchorCollapse: "收起消息锚点",
-            anchorJumpTo: (index) => `跳转到第 ${index} 条消息`
-        }
-    }[lang];
+    const t = window.GeminiExportI18n?.getTranslations
+        ? window.GeminiExportI18n.getTranslations({ language: navigator.language })
+        : {};
 
     const exportTimeout = 3000;
     const SCROLL_DELAY_MS = 1000;
@@ -365,19 +87,14 @@
         modelThoughtsBody: '.thoughts-body, .thoughts-content'
     };
 
-    let SELECTORS = { ...DEFAULT_SELECTORS };
-
-    // 从 LocalStorage 加载自定义选择器
-    try {
-        const saved = localStorage.getItem('gemini_export_selectors');
-        if (saved) {
-            const parsed = JSON.parse(saved);
-            SELECTORS = { ...SELECTORS, ...parsed };
-            console.log('Gemini Export: 已加载自定义选择器', SELECTORS);
-        }
-    } catch (e) {
-        console.warn('Gemini Export: 加载自定义选择器失败', e);
-    }
+    const loadSelectorConfig = window.GeminiExportBootstrap?.loadSelectorConfig;
+    let SELECTORS = typeof loadSelectorConfig === 'function'
+        ? loadSelectorConfig(DEFAULT_SELECTORS, {
+            storageKey: 'gemini_export_selectors',
+            loadedLog: 'Gemini Export: 已加载自定义选择器',
+            failedLog: 'Gemini Export: 加载自定义选择器失败'
+        })
+        : { ...DEFAULT_SELECTORS };
 
     // --- 脚本内部状态变量 ---
     let isScrolling = false;
@@ -386,179 +103,43 @@
     let noChangeCounter = 0;
 
     // --- UI 界面元素变量 ---
-    let exportButton = null;
-    let stopButtonScroll = null; // We might still need this if we want to show a stop button dynamically, or we can integrate it into the main button state
-    let statusDiv = null; // Maybe keep a small status toast
-    let anchorPanel = null;
-    let anchorList = null;
-    let anchorEmptyState = null;
-    let anchorToggleButton = null;
-    let anchorObserveTarget = null;
-    let anchorObserver = null;
-    let anchorRefreshTimer = null;
-    let anchorScrollHost = null;
-    let anchorScrollRaf = null;
-    let anchorEntries = [];
-    let activeAnchorIndex = -1;
-    let anchorStylesInjected = false;
-    let anchorCollapsed = false;
-    let anchorSyncStarted = false;
+    let uiController = null;
+    let anchorPanelController = null;
+    let imageExporter = null;
+    let exportPipeline = null;
+    let exportHandlers = null;
+    let exportDispatcher = null;
+    let scrollEngine = null;
+    let themeSyncController = null;
 
     // Previous panel vars removed
-
-
-    // 主题同步：跟随 Gemini 页面深浅色主题
-    let themeObserver = null;
-    let themeUpdateTimer = null;
-    let currentThemeMode = null;
 
     // --- 辅助工具函数 ---
     function delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    function parseRgbColor(colorString) {
-        if (!colorString) return null;
-        const m = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-        if (!m) return null;
-        return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
-    }
-
-    function getPageBackgroundColor() {
-        try {
-            const bodyBg = window.getComputedStyle(document.body).backgroundColor;
-            if (bodyBg && bodyBg !== 'rgba(0, 0, 0, 0)' && bodyBg !== 'transparent') return bodyBg;
-        } catch (_) { }
-        try {
-            return window.getComputedStyle(document.documentElement).backgroundColor;
-        } catch (_) { }
-        return '';
-    }
-
-    function detectPageThemeMode() {
-        try {
-            const scheme = window.getComputedStyle(document.documentElement).colorScheme;
-            if (scheme && scheme.includes('dark')) return 'dark';
-            if (scheme && scheme.includes('light')) return 'light';
-        } catch (_) { }
-
-        const rgb = parseRgbColor(getPageBackgroundColor());
-        if (rgb) {
-            const luminance = (0.2126 * rgb.r) + (0.7152 * rgb.g) + (0.0722 * rgb.b);
-            return luminance < 128 ? 'dark' : 'light';
+    function startThemeSync() {
+        if (!themeSyncController) {
+            const factory = window.GeminiExportThemeSync?.createThemeSyncController;
+            if (typeof factory !== 'function') {
+                console.warn('Gemini Export: theme sync module not loaded.');
+                return;
+            }
+            themeSyncController = factory();
         }
 
-        try {
-            return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        } catch (_) { }
-        return 'dark';
-    }
-
-    function applyThemeVariables(mode) {
-        const darkVars = {
-            '--ge-panel-bg': '#111827',
-            '--ge-panel-text': '#F9FAFB',
-            '--ge-text-muted': '#D1D5DB',
-            '--ge-text-muted-2': '#9CA3AF',
-            '--ge-border': '#374151',
-            '--ge-border-hover': '#6B7280',
-            '--ge-surface': '#1F2937',
-            '--ge-surface-2': '#111827',
-            '--ge-surface-hover': '#1F2937',
-            '--ge-divider': '#1F2937',
-            '--ge-primary': '#1E40AF',
-            '--ge-primary-hover': '#1D4ED8',
-            '--ge-primary-border': '#1D4ED8',
-            '--ge-on-primary': '#F9FAFB',
-            '--ge-success': '#059669',
-            '--ge-success-border': '#047857',
-            '--ge-danger': '#DC2626',
-            '--ge-danger-border': '#B91C1C',
-            '--ge-neutral': '#374151',
-            '--ge-neutral-border': '#4B5563',
-            '--ge-scroll-thumb': '#374151',
-            '--ge-scroll-thumb-hover': '#4B5563'
-        };
-        const lightVars = {
-            '--ge-panel-bg': '#F9FAFB',
-            '--ge-panel-text': '#111827',
-            '--ge-text-muted': '#374151',
-            '--ge-text-muted-2': '#6B7280',
-            '--ge-border': '#E5E7EB',
-            '--ge-border-hover': '#9CA3AF',
-            '--ge-surface': '#FFFFFF',
-            '--ge-surface-2': '#F3F4F6',
-            '--ge-surface-hover': '#F3F4F6',
-            '--ge-divider': '#E5E7EB',
-            '--ge-primary': '#1E40AF',
-            '--ge-primary-hover': '#1D4ED8',
-            '--ge-primary-border': '#1D4ED8',
-            '--ge-on-primary': '#F9FAFB',
-            '--ge-success': '#059669',
-            '--ge-success-border': '#047857',
-            '--ge-danger': '#DC2626',
-            '--ge-danger-border': '#B91C1C',
-            '--ge-neutral': '#374151',
-            '--ge-neutral-border': '#4B5563',
-            '--ge-scroll-thumb': '#D1D5DB',
-            '--ge-scroll-thumb-hover': '#9CA3AF'
-        };
-
-        const vars = mode === 'light' ? lightVars : darkVars;
-        Object.entries(vars).forEach(([key, value]) => {
-            document.documentElement.style.setProperty(key, value);
-        });
-        currentThemeMode = mode;
-    }
-
-    function refreshThemeIfNeeded() {
-        const nextMode = detectPageThemeMode();
-        if (nextMode === currentThemeMode) return;
-        applyThemeVariables(nextMode);
-    }
-
-    function scheduleThemeRefresh(delayMs = 120) {
-        if (themeUpdateTimer) window.clearTimeout(themeUpdateTimer);
-        themeUpdateTimer = window.setTimeout(() => {
-            themeUpdateTimer = null;
-            refreshThemeIfNeeded();
-        }, delayMs);
-    }
-
-    function startThemeSync() {
-        applyThemeVariables(detectPageThemeMode());
-
-        if (themeObserver) themeObserver.disconnect();
-        themeObserver = new MutationObserver(() => scheduleThemeRefresh(120));
-        try {
-            themeObserver.observe(document.documentElement, {
-                attributes: true,
-                attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme', 'color-scheme']
-            });
-        } catch (_) { }
-        try {
-            themeObserver.observe(document.body, {
-                attributes: true,
-                attributeFilter: ['class', 'style']
-            });
-        } catch (_) { }
-
-        try {
-            const media = window.matchMedia('(prefers-color-scheme: dark)');
-            if (media && media.addEventListener) media.addEventListener('change', () => scheduleThemeRefresh(120));
-            else if (media && media.addListener) media.addListener(() => scheduleThemeRefresh(120));
-        } catch (_) { }
+        if (typeof themeSyncController.startThemeSync === 'function') {
+            themeSyncController.startThemeSync();
+        }
     }
 
     function getCurrentTimestamp() {
-        const n = new Date();
-        const YYYY = n.getFullYear();
-        const MM = (n.getMonth() + 1).toString().padStart(2, '0');
-        const DD = n.getDate().toString().padStart(2, '0');
-        const hh = n.getHours().toString().padStart(2, '0');
-        const mm = n.getMinutes().toString().padStart(2, '0');
-        const ss = n.getSeconds().toString().padStart(2, '0');
-        return `${YYYY}${MM}${DD}_${hh}${mm}${ss}`;
+        const getter = window.GeminiExportProjectUtils?.getCurrentTimestamp;
+        if (typeof getter === 'function') {
+            return getter();
+        }
+        return new Date().toISOString().replace(/[:.]/g, '-');
     }
 
     /**
@@ -566,1006 +147,319 @@
      * @returns {string} - 清理后的项目名称，或一个默认名称
      */
     function getProjectName() {
-        try {
-            // Updated to prioritize conversation title as requested
-            const titleElement = document.querySelector('.top-bar-actions .conversation-title, .selected  .conversation-title');
-            if (titleElement && titleElement.textContent && titleElement.textContent.trim()) {
-                const cleanName = titleElement.textContent.trim().replace(/[\\/:\*\?"<>\|]/g, '_');
-                if (cleanName) return cleanName;
-            }
-
-            const firstUser = document.querySelector('#chat-history user-query .query-text, #chat-history user-query .query-text-line, #chat-history user-query .query-text p');
-            if (firstUser && firstUser.textContent && firstUser.textContent.trim()) {
-                const raw = firstUser.textContent.trim().replace(/\s+/g, ' ');
-                const clean = raw.substring(0, 20).replace(/[\\/:\*\?"<>\|]/g, '_');
-                if (clean) return `Gemini_${clean}`;
-            }
-        } catch (e) { console.warn('Gemini 项目名提取失败，回退 XPath', e); }
-        const xpath = "/html/body/app-root/ms-app/div/div/div/div/span/ms-prompt-switcher/ms-chunk-editor/section/ms-toolbar/div/div[1]/div/div/h1";
-        const defaultName = "GeminiChat";
-        try {
-            const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-            const titleElement = result.singleNodeValue;
-            if (titleElement && titleElement.textContent) {
-                const cleanName = titleElement.textContent.trim().replace(/[\\/:\*\?"<>\|]/g, '_');
-                return cleanName || defaultName;
-            }
-        } catch (e) { }
-        return defaultName;
-    }
-
-
-    function containsChatMarkers(element) {
-        if (!element || typeof element.querySelector !== 'function') return false;
-        return Boolean(element.querySelector('#chat-history, .chat-history-scroll-container, chat-history, infinite-scroller, [data-test-id="chat-history-container"], user-query, model-response, ms-chat-turn, .conversation-container'));
-    }
-
-    function isMapRelatedElement(element) {
-        if (!element || typeof element.matches !== 'function') return false;
-        if (element.matches('maps, .map, .gm-style, .gm-style-moc, .gm-style-cc, .gmnoprint')) return true;
-        return Boolean(element.closest('maps, .gm-style, .gm-style-moc, .gm-style-cc, .gmnoprint'));
-    }
-
-    function isUsableScrollerElement(element) {
-        if (!element || element.nodeType !== 1) return false;
-        if (isMapRelatedElement(element)) return false;
-
-        // document 根滚动容器允许 overflowY 非 auto/scroll
-        if (element === document.documentElement || element === document.body) {
-            const root = document.scrollingElement || document.documentElement;
-            return root.scrollHeight > root.clientHeight + 20;
+        const getter = window.GeminiExportProjectUtils?.getProjectName;
+        if (typeof getter === 'function') {
+            return getter();
         }
-
-        let style;
-        try {
-            style = window.getComputedStyle(element);
-        } catch (_) {
-            return false;
-        }
-
-        if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
-        const overflowY = style.overflowY;
-        if (!['auto', 'scroll', 'overlay'].includes(overflowY)) return false;
-        if (element.scrollHeight <= element.clientHeight + 20) return false;
-
-        const rect = element.getBoundingClientRect();
-        if (!rect || rect.height < 120 || rect.width < 120) return false;
-
-        return true;
+        return 'GeminiChat';
     }
 
-    function getScrollerCandidateScore(element) {
-        if (!isUsableScrollerElement(element)) return Number.NEGATIVE_INFINITY;
-
-        let score = Math.max(0, element.scrollHeight - element.clientHeight);
-        const rect = element.getBoundingClientRect();
-        const markerBonus = containsChatMarkers(element) ? 5000 : 0;
-
-        if (rect.height >= window.innerHeight * 0.5) score += 1400;
-        if (rect.width >= window.innerWidth * 0.35) score += 400;
-        if (markerBonus) score += markerBonus;
-
-        if (element.matches('.chat-scrollable-container, .chat-history-scroll-container, chat-history-scroll-container, mat-sidenav-content, infinite-scroller, [data-test-id="chat-history-container"]')) {
-            score += 1200;
-        }
-
-        if (element.id === 'chat-history' || element.closest('#chat-history')) {
-            score += 700;
-        }
-
-        return score;
-    }
-
-    function findBestScrollerFromCandidates(candidates, strategyLabel) {
-        const unique = [];
-        const seen = new Set();
-
-        candidates.forEach((candidate) => {
-            if (!candidate || seen.has(candidate)) return;
-            seen.add(candidate);
-            unique.push(candidate);
-        });
-
-        let bestElement = null;
-        let bestScore = Number.NEGATIVE_INFINITY;
-
-        unique.forEach((candidate) => {
-            const score = getScrollerCandidateScore(candidate);
-            if (score > bestScore) {
-                bestScore = score;
-                bestElement = candidate;
-            }
-        });
-
-        if (bestElement) {
-            console.log(`找到滚动容器 (${strategyLabel}):`, bestElement);
-            return bestElement;
-        }
-
-        return null;
-    }
 
     function getMainScrollerElement() {
-        console.log("尝试查找滚动容器 (用于滚动导出)...");
-
-        // 策略 1：常见 Gemini 容器
-        const directCandidates = [];
-        [
-            '.chat-scrollable-container',
-            '.chat-history-scroll-container',
-            'chat-history-scroll-container',
-            'infinite-scroller',
-            '[data-test-id="chat-history-container"]',
-            '.chat-history',
-            'mat-sidenav-content',
-            '#chat-history',
-            'chat-history',
-            'main'
-        ].forEach((selector) => {
-            try {
-                document.querySelectorAll(selector).forEach((el) => directCandidates.push(el));
-            } catch (_) { }
-        });
-
-        let scroller = findBestScrollerFromCandidates(directCandidates, '策略 1: 常见容器');
-        if (scroller) return scroller;
-
-        // 策略 2：从消息节点向上追溯祖先滚动容器（可覆盖 Google Map 等复杂回复布局）
-        const messageNodes = Array.from(document.querySelectorAll(
-            '#chat-history user-query, #chat-history model-response, #chat-history ms-chat-turn, #chat-history .conversation-container, user-query, model-response, ms-chat-turn'
-        )).slice(0, 80);
-
-        if (messageNodes.length > 0) {
-            const ancestorCandidates = [];
-            messageNodes.forEach((node) => {
-                let current = node;
-                let depth = 0;
-                while (current && depth < 14) {
-                    ancestorCandidates.push(current);
-                    current = current.parentElement;
-                    depth++;
-                }
-            });
-
-            scroller = findBestScrollerFromCandidates(ancestorCandidates, '策略 2: 消息节点向上查找');
-            if (scroller) return scroller;
+        const resolver = window.GeminiExportScroller?.getMainScrollerElement;
+        if (typeof resolver === 'function') {
+            return resolver();
         }
-
-        // 策略 3：宽松扫描候选容器
-        const broadCandidates = [];
-        [
-            '[class*="chat"]',
-            '[class*="Chat"]',
-            '[class*="history"]',
-            '[class*="History"]',
-            '[class*="conversation"]',
-            '[class*="Conversation"]',
-            '[class*="scroll"]',
-            '[class*="Scrollable"]',
-            '[data-test-id*="chat"]',
-            '[data-test-id*="history"]',
-            '[style*="overflow"]'
-        ].forEach((selector) => {
-            try {
-                document.querySelectorAll(selector).forEach((el) => broadCandidates.push(el));
-            } catch (_) { }
-        });
-
-        scroller = findBestScrollerFromCandidates(broadCandidates, '策略 3: 宽松扫描');
-        if (scroller) return scroller;
-
-        // 策略 4：document 根滚动容器
-        const rootCandidates = [document.scrollingElement, document.documentElement, document.body];
-        scroller = findBestScrollerFromCandidates(rootCandidates, '策略 4: document 根容器');
-        if (scroller) return scroller;
-
-        console.warn("警告 (滚动导出): 未能精确定位聊天滚动容器，回退到 document.scrollingElement。如仍无法滚动，请提供当前会话 DOM 结构。");
+        console.warn('Gemini Export: scroller module not loaded, fallback to document root scroller.');
         return document.scrollingElement || document.documentElement || document.body;
     }
 
     function extractDataIncremental_Gemini() {
-        let newly = 0, updated = false;
-        const nodes = document.querySelectorAll('#chat-history .conversation-container');
-        const seenUserTexts = new Set(); // 用于去重用户消息
+        const extractor = window.GeminiExportConversationExtractor;
+        if (!extractor || typeof extractor.extractDataIncrementalGemini !== 'function') {
+            console.warn('Gemini Export: conversation extractor module not loaded.');
+            return false;
+        }
 
-        nodes.forEach((c, idx) => {
-            let info = collectedData.get(c) || { domOrder: idx, type: 'unknown', userText: null, thoughtText: null, responseText: null };
-            let changed = false;
-            if (!collectedData.has(c)) { collectedData.set(c, info); newly++; }
-            if (!info.userText) {
-                // 优先顺序策略，防止重复提取
-                let userTexts = [];
-                // 1. 尝试提取多行格式
-                const textLines = Array.from(c.querySelectorAll(`${SELECTORS.userContainer} ${SELECTORS.userLine}`));
-                if (textLines.length > 0) {
-                    userTexts = textLines.map(el => el.innerText.trim());
-                } else {
-                    // 2. 尝试提取段落
-                    const paragraphs = Array.from(c.querySelectorAll(`${SELECTORS.userContainer} ${SELECTORS.userParagraph}`));
-                    if (paragraphs.length > 0) {
-                        userTexts = paragraphs.map(el => el.innerText.trim());
-                    } else {
-                        // 3. 回退到整个容器
-                        const container = c.querySelector(`${SELECTORS.userContainer} ${SELECTORS.userText}`);
-                        if (container) {
-                            userTexts = [container.innerText.trim()];
-                        }
-                    }
-                }
-
-                userTexts = userTexts.filter(Boolean);
-
-                if (userTexts.length) {
-                    const combinedUserText = userTexts.join('\n');
-                    // 检查是否已经存在相同的用户消息
-                    if (!seenUserTexts.has(combinedUserText)) {
-                        seenUserTexts.add(combinedUserText);
-                        info.userText = combinedUserText;
-                        changed = true;
-                        if (info.type === 'unknown') info.type = 'user';
-                    }
-                }
-            }
-            const modelRoot = c.querySelector(SELECTORS.modelContent);
-            if (modelRoot) {
-                if (!info.responseText) {
-                    const md = modelRoot.querySelector(SELECTORS.modelMarkdown);
-                    if (md && md.innerText.trim()) {
-                        info.responseText = md.innerText.trim();
-                        info.responseHtml = md; // 存储 HTML 元素引用，用于 Markdown 导出
-                        changed = true;
-                    }
-                }
-                if (!info.thoughtText) {
-                    const thoughts = modelRoot.querySelector(SELECTORS.modelThoughts);
-                    if (thoughts) {
-                        let textReal = '';
-                        const body = thoughts.querySelector(SELECTORS.modelThoughtsBody);
-                        if (body && body.innerText.trim() && !/显示思路/.test(body.innerText.trim())) textReal = body.innerText.trim();
-                        info.thoughtText = textReal || '(思维链未展开)'; // 占位策略 A
-                        changed = true;
-                    }
-                }
-            }
-            if (changed) {
-                if (info.userText && info.responseText && info.thoughtText) info.type = 'model_thought_reply';
-                else if (info.userText && info.responseText) info.type = 'model_reply';
-                else if (info.userText) info.type = 'user';
-                else if (info.responseText && info.thoughtText) info.type = 'model_thought_reply';
-                else if (info.responseText) info.type = 'model_reply';
-                else if (info.thoughtText) info.type = 'model_thought';
-                collectedData.set(c, info); updated = true;
-            }
+        return extractor.extractDataIncrementalGemini({
+            collectedData,
+            selectors: SELECTORS,
+            updateStatus,
+            scrollCount,
+            maxScrollAttempts: MAX_SCROLL_ATTEMPTS
         });
-        updateStatus(`滚动 ${scrollCount}/${MAX_SCROLL_ATTEMPTS}... 已收集 ${collectedData.size} 条记录..`);
-
-        return newly > 0 || updated;
     }
 
     function extractDataIncremental_Dispatch() {
-        if (document.querySelector('#chat-history .conversation-container')) return extractDataIncremental_Gemini();
-        return extractDataIncremental_AiStudio();
-    }
-
-    function injectAnchorStyles() {
-        if (anchorStylesInjected) return;
-        GM_addStyle(`
-            #ge-thread-anchor-panel {
-                position: fixed;
-                top: 86px;
-                right: 14px;
-                width: 230px;
-                min-height: 180px;
-                height: calc(100vh - 190px);
-                max-height: 760px;
-                background: var(--ge-panel-bg, #111827);
-                color: var(--ge-panel-text, #F9FAFB);
-                border: 1px solid var(--ge-border, #374151);
-                border-radius: 12px;
-                box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
-                z-index: 9998;
-                display: flex;
-                flex-direction: column;
-                overflow: hidden;
-                font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-            }
-            #ge-thread-anchor-panel .ge-anchor-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 10px 10px 8px 12px;
-                border-bottom: 1px solid var(--ge-divider, #1F2937);
-                gap: 8px;
-            }
-            #ge-thread-anchor-panel .ge-anchor-title {
-                font-size: 12px;
-                font-weight: 700;
-                letter-spacing: 0.02em;
-                color: var(--ge-panel-text, #F9FAFB);
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            #ge-thread-anchor-panel .ge-anchor-toggle {
-                width: 24px;
-                height: 24px;
-                border-radius: 6px;
-                border: 1px solid var(--ge-border, #374151);
-                background: var(--ge-surface, #1F2937);
-                color: var(--ge-panel-text, #F9FAFB);
-                cursor: pointer;
-                font-size: 12px;
-                line-height: 1;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                transition: all 0.2s ease;
-            }
-            #ge-thread-anchor-panel .ge-anchor-toggle:hover {
-                background: var(--ge-surface-hover, #1F2937);
-                border-color: var(--ge-border-hover, #6B7280);
-            }
-            #ge-thread-anchor-panel .ge-anchor-list-wrap {
-                flex: 1;
-                min-height: 0;
-                overflow: auto;
-                padding: 8px;
-            }
-            #ge-thread-anchor-panel .ge-anchor-list-wrap::-webkit-scrollbar {
-                width: 8px;
-            }
-            #ge-thread-anchor-panel .ge-anchor-list-wrap::-webkit-scrollbar-thumb {
-                background: var(--ge-scroll-thumb, #374151);
-                border-radius: 999px;
-            }
-            #ge-thread-anchor-panel .ge-anchor-list-wrap::-webkit-scrollbar-thumb:hover {
-                background: var(--ge-scroll-thumb-hover, #4B5563);
-            }
-            #ge-thread-anchor-panel .ge-anchor-empty {
-                font-size: 12px;
-                color: var(--ge-text-muted, #D1D5DB);
-                padding: 8px 6px;
-                line-height: 1.4;
-            }
-            #ge-thread-anchor-panel .ge-anchor-list {
-                list-style: none;
-                padding: 0;
-                margin: 0;
-                display: flex;
-                flex-direction: column;
-                gap: 6px;
-            }
-            #ge-thread-anchor-panel .ge-anchor-item {
-                width: 100%;
-                border: 1px solid var(--ge-border, #374151);
-                border-radius: 8px;
-                background: var(--ge-surface, #1F2937);
-                color: var(--ge-panel-text, #F9FAFB);
-                padding: 7px 8px;
-                text-align: left;
-                cursor: pointer;
-                transition: all 0.2s ease;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                font-size: 12px;
-            }
-            #ge-thread-anchor-panel .ge-anchor-item:hover {
-                background: var(--ge-surface-hover, #1F2937);
-                border-color: var(--ge-border-hover, #6B7280);
-            }
-            #ge-thread-anchor-panel .ge-anchor-item.is-active {
-                border-color: var(--ge-primary-border, #1D4ED8);
-                background: rgba(30, 64, 175, 0.22);
-            }
-            #ge-thread-anchor-panel .ge-anchor-badge {
-                flex: 0 0 auto;
-                min-width: 42px;
-                height: 20px;
-                border-radius: 999px;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 11px;
-                font-weight: 700;
-                padding: 0 6px;
-                letter-spacing: 0.02em;
-            }
-            #ge-thread-anchor-panel .ge-anchor-badge.ge-anchor-user {
-                background: rgba(30, 64, 175, 0.3);
-                color: var(--ge-on-primary, #F9FAFB);
-            }
-            #ge-thread-anchor-panel .ge-anchor-badge.ge-anchor-model {
-                background: rgba(5, 150, 105, 0.34);
-                color: var(--ge-on-primary, #F9FAFB);
-            }
-            #ge-thread-anchor-panel .ge-anchor-text {
-                min-width: 0;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            #ge-thread-anchor-panel.ge-collapsed {
-                width: 42px;
-                min-height: 42px;
-                height: 42px;
-                overflow: hidden;
-            }
-            #ge-thread-anchor-panel.ge-collapsed .ge-anchor-header {
-                padding: 8px;
-                border-bottom: none;
-                justify-content: center;
-            }
-            #ge-thread-anchor-panel.ge-collapsed .ge-anchor-title,
-            #ge-thread-anchor-panel.ge-collapsed .ge-anchor-list-wrap {
-                display: none;
-            }
-            @media (max-width: 1280px) {
-                #ge-thread-anchor-panel {
-                    width: 190px;
-                }
-            }
-            @media (max-width: 980px) {
-                #ge-thread-anchor-panel {
-                    display: none !important;
-                }
-            }
-        `);
-        anchorStylesInjected = true;
-    }
-
-    function getThreadRootElement() {
-        return document.querySelector('#chat-history') ||
-            document.querySelector('chat-history') ||
-            document.querySelector('chat-window-content') ||
-            document.querySelector('main') ||
-            document.body;
-    }
-
-    function getThreadMessageNodes() {
-        const root = getThreadRootElement();
-        if (!root) return [];
-
-        const messageNodes = [];
-        const messageSelector = `${SELECTORS.userContainer || 'user-query'}, ${SELECTORS.modelContainer || 'model-response'}`;
-
-        try {
-            const nodes = Array.from(root.querySelectorAll(messageSelector));
-            if (nodes.length > 0) {
-                nodes.forEach((node) => {
-                    let role = 'model';
-                    try {
-                        if (SELECTORS.userContainer && node.matches(SELECTORS.userContainer)) role = 'user';
-                    } catch (_) {
-                        role = node.tagName?.toLowerCase() === 'user-query' ? 'user' : 'model';
-                    }
-                    messageNodes.push({ node, role });
-                });
-                return messageNodes;
-            }
-        } catch (e) {
-            console.warn('Gemini Export: 解析消息节点失败，回退到 ms-chat-turn', e);
+        const extractor = window.GeminiExportConversationExtractor;
+        if (!extractor || typeof extractor.extractDataIncrementalDispatch !== 'function') {
+            if (document.querySelector('#chat-history .conversation-container')) return extractDataIncremental_Gemini();
+            return extractDataIncremental_AiStudio();
         }
 
-        const turns = Array.from(root.querySelectorAll('ms-chat-turn'));
-        turns.forEach((turn) => {
-            const turnContainer = turn.querySelector('.chat-turn-container.user, .chat-turn-container.model');
-            if (!turnContainer) return;
-            const role = turnContainer.classList.contains('user') ? 'user' : 'model';
-            messageNodes.push({ node: turn, role });
+        return extractor.extractDataIncrementalDispatch({
+            collectedData,
+            selectors: SELECTORS,
+            updateStatus,
+            scrollCount,
+            maxScrollAttempts: MAX_SCROLL_ATTEMPTS,
+            t
         });
-
-        return messageNodes;
-    }
-
-    function getMessageAnchorSnippet(node, role) {
-        if (!node) return role === 'user' ? t.anchorUserFallback : t.anchorModelFallback;
-
-        let source = node;
-        if (role === 'user') {
-            source = node.querySelector(SELECTORS.userText) ||
-                node.querySelector('.query-text-line, .query-text p') ||
-                node;
-        } else {
-            source = node.querySelector('.model-response-text .markdown, .model-response-text, .response-container-content, .markdown') ||
-                node;
-        }
-
-        let text = source.innerText || source.textContent || '';
-        text = cleanupMarkdown(text.replace(/\n+/g, ' '));
-        if (!text) text = role === 'user' ? t.anchorUserFallback : t.anchorModelFallback;
-
-        const maxLen = 44;
-        return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
-    }
-
-    function setAnchorPanelCollapsed(nextCollapsed) {
-        anchorCollapsed = Boolean(nextCollapsed);
-        if (!anchorPanel || !anchorToggleButton) return;
-
-        anchorPanel.classList.toggle('ge-collapsed', anchorCollapsed);
-        anchorToggleButton.textContent = anchorCollapsed ? t.btnToggleClose : t.btnToggleOpen;
-        anchorToggleButton.title = anchorCollapsed ? t.anchorExpand : t.anchorCollapse;
     }
 
     function togglePanel() {
-        if (!anchorSyncStarted) startAnchorSync();
-        if (!anchorPanel) return;
-        setAnchorPanelCollapsed(!anchorCollapsed);
-    }
-
-    function createAnchorPanel() {
-        if (anchorPanel) return;
-
-        injectAnchorStyles();
-
-        anchorPanel = document.createElement('aside');
-        anchorPanel.id = 'ge-thread-anchor-panel';
-
-        const header = document.createElement('div');
-        header.className = 'ge-anchor-header';
-
-        const title = document.createElement('div');
-        title.className = 'ge-anchor-title';
-        title.textContent = t.anchorTitle;
-
-        anchorToggleButton = document.createElement('button');
-        anchorToggleButton.type = 'button';
-        anchorToggleButton.className = 'ge-anchor-toggle';
-        anchorToggleButton.addEventListener('click', togglePanel);
-
-        header.appendChild(title);
-        header.appendChild(anchorToggleButton);
-
-        const listWrap = document.createElement('div');
-        listWrap.className = 'ge-anchor-list-wrap';
-
-        anchorEmptyState = document.createElement('div');
-        anchorEmptyState.className = 'ge-anchor-empty';
-        anchorEmptyState.textContent = t.anchorEmpty;
-
-        anchorList = document.createElement('ul');
-        anchorList.className = 'ge-anchor-list';
-
-        listWrap.appendChild(anchorEmptyState);
-        listWrap.appendChild(anchorList);
-        anchorPanel.appendChild(header);
-        anchorPanel.appendChild(listWrap);
-
-        document.body.appendChild(anchorPanel);
-        setAnchorPanelCollapsed(true);
-    }
-
-    function setActiveAnchorIndex(index) {
-        if (activeAnchorIndex === index) return;
-        activeAnchorIndex = index;
-        if (!anchorList) return;
-
-        anchorList.querySelectorAll('.ge-anchor-item.is-active').forEach((btn) => {
-            btn.classList.remove('is-active');
-        });
-
-        if (index < 0) return;
-        const activeBtn = anchorList.querySelector(`.ge-anchor-item[data-index="${index}"]`);
-        if (activeBtn) activeBtn.classList.add('is-active');
-    }
-
-    function scrollToAnchor(index) {
-        const entry = anchorEntries[index];
-        if (!entry || !entry.node || !entry.node.isConnected) {
-            scheduleAnchorRefresh(80);
-            return;
+        if (!anchorPanelController) {
+            startAnchorSync();
         }
-
-        setActiveAnchorIndex(index);
-        try {
-            entry.node.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-        } catch (_) {
-            entry.node.scrollIntoView();
+        if (anchorPanelController && typeof anchorPanelController.togglePanel === 'function') {
+            anchorPanelController.togglePanel();
         }
-    }
-
-    function updateActiveAnchorByViewport() {
-        if (!anchorEntries.length) {
-            setActiveAnchorIndex(-1);
-            return;
-        }
-
-        const focusLine = Math.max(90, Math.min(window.innerHeight * 0.34, 250));
-        let nextActive = 0;
-
-        for (let i = 0; i < anchorEntries.length; i++) {
-            const current = anchorEntries[i];
-            if (!current.node || !current.node.isConnected) continue;
-
-            const rect = current.node.getBoundingClientRect();
-            if (rect.top <= focusLine) nextActive = i;
-            if (rect.top > focusLine) break;
-        }
-
-        setActiveAnchorIndex(nextActive);
-    }
-
-    function onAnchorHostScroll() {
-        if (anchorScrollRaf) return;
-        anchorScrollRaf = window.requestAnimationFrame(() => {
-            anchorScrollRaf = null;
-            updateActiveAnchorByViewport();
-        });
-    }
-
-    function getAnchorScrollHost() {
-        const scroller = document.querySelector('.chat-scrollable-container') ||
-            document.querySelector('.chat-history-scroll-container') ||
-            document.querySelector('chat-history-scroll-container') ||
-            document.querySelector('infinite-scroller') ||
-            document.querySelector('[data-test-id="chat-history-container"]') ||
-            document.querySelector('mat-sidenav-content');
-        if (scroller && scroller.scrollHeight > scroller.clientHeight) return scroller;
-        return window;
-    }
-
-    function bindAnchorScrollHost() {
-        const nextHost = getAnchorScrollHost();
-        if (anchorScrollHost === nextHost) return;
-
-        if (anchorScrollHost) {
-            if (anchorScrollHost === window) {
-                window.removeEventListener('scroll', onAnchorHostScroll);
-            } else {
-                anchorScrollHost.removeEventListener('scroll', onAnchorHostScroll);
-            }
-        }
-
-        anchorScrollHost = nextHost;
-        if (anchorScrollHost === window) {
-            window.addEventListener('scroll', onAnchorHostScroll, { passive: true });
-        } else {
-            anchorScrollHost.addEventListener('scroll', onAnchorHostScroll, { passive: true });
-        }
-    }
-
-    function ensureAnchorObserver() {
-        const nextTarget = getThreadRootElement();
-        if (!nextTarget) return;
-        if (anchorObserveTarget === nextTarget && anchorObserver) return;
-
-        if (anchorObserver) anchorObserver.disconnect();
-        anchorObserveTarget = nextTarget;
-        anchorObserver = new MutationObserver(() => scheduleAnchorRefresh(120));
-
-        try {
-            anchorObserver.observe(anchorObserveTarget, { childList: true, subtree: true });
-        } catch (e) {
-            console.warn('Gemini Export: 锚点观察器挂载失败', e);
-        }
-    }
-
-    function refreshAnchorList() {
-        if (!anchorList || !anchorEmptyState) return;
-        ensureAnchorObserver();
-        bindAnchorScrollHost();
-
-        anchorEntries = getThreadMessageNodes().map((entry, index) => {
-            return {
-                node: entry.node,
-                role: entry.role,
-                index,
-                label: getMessageAnchorSnippet(entry.node, entry.role)
-            };
-        });
-
-        anchorList.innerHTML = '';
-        if (anchorEntries.length === 0) {
-            anchorEmptyState.style.display = 'block';
-            setActiveAnchorIndex(-1);
-            return;
-        }
-
-        anchorEmptyState.style.display = 'none';
-        anchorEntries.forEach((entry, index) => {
-            const li = document.createElement('li');
-
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'ge-anchor-item';
-            button.dataset.index = String(index);
-            button.title = t.anchorJumpTo(index + 1);
-
-            const badge = document.createElement('span');
-            badge.className = `ge-anchor-badge ${entry.role === 'user' ? 'ge-anchor-user' : 'ge-anchor-model'}`;
-            const roleText = entry.role === 'user' ? t.anchorUserShort : t.anchorModelShort;
-            badge.textContent = `${roleText}${String(index + 1)}`;
-
-            const text = document.createElement('span');
-            text.className = 'ge-anchor-text';
-            text.textContent = entry.label;
-
-            button.appendChild(badge);
-            button.appendChild(text);
-            button.addEventListener('click', () => scrollToAnchor(index));
-
-            li.appendChild(button);
-            anchorList.appendChild(li);
-        });
-
-        updateActiveAnchorByViewport();
-    }
-
-    function scheduleAnchorRefresh(delayMs = 120) {
-        if (anchorRefreshTimer) window.clearTimeout(anchorRefreshTimer);
-        anchorRefreshTimer = window.setTimeout(() => {
-            anchorRefreshTimer = null;
-            refreshAnchorList();
-        }, delayMs);
     }
 
     function startAnchorSync() {
-        if (anchorSyncStarted) return;
-        anchorSyncStarted = true;
+        if (anchorPanelController) {
+            anchorPanelController.start();
+            return;
+        }
 
-        createAnchorPanel();
-        window.addEventListener('resize', onAnchorHostScroll, { passive: true });
-        window.addEventListener('resize', () => scheduleAnchorRefresh(120), { passive: true });
+        const factory = window.GeminiExportAnchorPanel?.createAnchorPanelController;
+        if (typeof factory !== 'function') {
+            console.warn('Gemini Export: anchor panel module not loaded.');
+            return;
+        }
 
-        scheduleAnchorRefresh(0);
-        window.setTimeout(() => scheduleAnchorRefresh(400), 400);
-        window.setTimeout(() => scheduleAnchorRefresh(2000), 2000);
+        anchorPanelController = factory({
+            t,
+            cleanupMarkdown,
+            GM_addStyle,
+            getSelectors: () => SELECTORS,
+            getScrollHost: () => {
+                const hostGetter = window.GeminiExportScroller?.getAnchorScrollHost;
+                if (typeof hostGetter === 'function') {
+                    return hostGetter();
+                }
+                const fallbackScroller = getMainScrollerElement();
+                if (!fallbackScroller || fallbackScroller === document.documentElement || fallbackScroller === document.body || fallbackScroller === document.scrollingElement) {
+                    return window;
+                }
+                return fallbackScroller;
+            }
+        });
+        anchorPanelController.start();
+    }
+
+    function getUiController() {
+        if (uiController) return uiController;
+
+        const factory = window.GeminiExportUiController?.createUiController;
+        if (typeof factory !== 'function') {
+            console.warn('Gemini Export: UI controller module not loaded.');
+            return null;
+        }
+
+        uiController = factory({
+            t,
+            onExportClick: handleExportClick,
+            onReady: startAnchorSync
+        });
+
+        return uiController;
+    }
+
+    function getExportButton() {
+        const controller = getUiController();
+        if (!controller || typeof controller.getExportButton !== 'function') {
+            return null;
+        }
+        return controller.getExportButton();
     }
 
 
 
     // --- UI 界面创建与更新 ---
     function createUI() {
-        console.log("Creating Export Button...");
-
-        // Create Floating Export Button
-        exportButton = document.createElement('button');
-        exportButton.id = 'gemini-quick-export-btn';
-        exportButton.title = t.btnExport; // Tooltip shows text
-        exportButton.style.cssText = `
-            position: fixed;
-            bottom: 30px;
-            right: 30px;
-            width: 46px;
-            height: 46px;
-            padding: 0;
-            background: var(--ge-primary, #1a73e8);
-            color: #fff;
-            border: none;
-            border-radius: 50%;
-            cursor: pointer;
-            z-index: 10000;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        `;
-
-        // Icon only (Download Icon)
-        exportButton.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
-
-        exportButton.addEventListener('click', handleExportClick);
-        exportButton.addEventListener('mouseenter', () => exportButton.style.transform = 'translateY(-2px) scale(1.05)');
-        exportButton.addEventListener('mouseleave', () => exportButton.style.transform = 'translateY(0) scale(1)');
-
-        document.body.appendChild(exportButton);
-
-        // Toast status container
-        statusDiv = document.createElement('div');
-        statusDiv.id = 'ge-status-toast';
-        statusDiv.style.cssText = `
-            position: fixed;
-            bottom: 90px;
-            right: 30px;
-            padding: 10px 16px;
-            background: #333;
-            color: #fff;
-            border-radius: 8px;
-            font-size: 13px;
-            z-index: 10001;
-            opacity: 0;
-            transition: opacity 0.3s;
-            pointer-events: none;
-            font-family: system-ui;
-        `;
-        document.body.appendChild(statusDiv);
-
-        startAnchorSync();
-
-        console.log(t.logUICreated);
+        const controller = getUiController();
+        if (!controller || typeof controller.init !== 'function') {
+            console.warn('Gemini Export: failed to initialize UI controller.');
+            return;
+        }
+        controller.init();
     }
 
     async function handleExportClick() {
-        if (isScrolling) {
-            updateStatus(t.statusStop);
-            isScrolling = false;
-            exportButton.title = t.statusStop;
-            exportButton.disabled = true;
+        const dispatcher = getExportDispatcher();
+        if (!dispatcher || typeof dispatcher.handleExportClick !== 'function') {
+            console.warn('Gemini Export: export dispatcher module not loaded.');
             return;
         }
-
-        // Read settings from storage with fallback
-        let format = 'md';
-        let type = 'both';
-
-        try {
-            if (chrome && chrome.storage && chrome.storage.local) {
-                const settings = await chrome.storage.local.get(['exportFormat', 'exportType']);
-                format = settings.exportFormat || 'md';
-                type = settings.exportType || 'both';
-            }
-        } catch (e) {
-            console.warn('Failed to read settings from chrome.storage, using defaults:', e);
-        }
-
-        // Update global format var for existing logic compatibility
-        window.__GEMINI_EXPORT_FORMAT = format;
-
-        console.log(t.logStartingExport(type, format));
-        updateStatus(`${t.statusStarting} (${type}, ${format})`);
-
-        if (type === 'dialog') {
-            handleScrollExtraction();
-        } else if (type === 'canvas') {
-            handleCanvasExtraction();
-        } else if (type === 'both') {
-            handleCombinedExtraction();
-        }
+        await dispatcher.handleExportClick();
     }
 
 
 
 
     function updateStatus(message) {
-        if (statusDiv) {
-            statusDiv.textContent = message;
-            statusDiv.style.opacity = message ? '1' : '0';
+        const controller = getUiController();
+        if (controller && typeof controller.updateStatus === 'function') {
+            controller.updateStatus(message);
+            return;
         }
         console.log(`[Status] ${message}`);
     }
 
-    function sendRuntimeMessage(request) {
-        return new Promise((resolve, reject) => {
-            try {
-                chrome.runtime.sendMessage(request, (response) => {
-                    const lastError = chrome.runtime.lastError;
-                    if (lastError) {
-                        reject(new Error(lastError.message || 'Unknown runtime error'));
-                        return;
-                    }
-                    resolve(response);
-                });
-            } catch (e) {
-                reject(e);
-            }
-        });
-    }
+    function getImageExporter() {
+        if (imageExporter) return imageExporter;
 
-    function sanitizeFileNameSegment(name) {
-        return (name || 'GeminiChat')
-            .replace(/[\\/:\*\?"<>\|]/g, '_')
-            .replace(/\s+/g, '_')
-            .replace(/_+/g, '_')
-            .replace(/^_+|_+$/g, '')
-            .slice(0, 60) || 'GeminiChat';
-    }
-
-    function normalizeImageExtension(ext) {
-        const lower = (ext || '').toLowerCase();
-        if (lower === 'jpeg' || lower === 'pjpeg') return 'jpg';
-        if (lower === 'svg+xml') return 'svg';
-        if (lower === 'x-icon') return 'ico';
-        if (/^[a-z0-9]{2,5}$/.test(lower)) return lower;
-        return 'jpg';
-    }
-
-    function guessImageExtensionFromUrl(url) {
-        if (!url) return 'jpg';
-
-        const dataUrlMatch = url.match(/^data:image\/([a-zA-Z0-9.+-]+);/i);
-        if (dataUrlMatch) {
-            return normalizeImageExtension(dataUrlMatch[1]);
+        const factory = window.GeminiExportImageExporter?.createImageExporter;
+        if (typeof factory !== 'function') {
+            console.warn('Gemini Export: image exporter module not loaded.');
+            return null;
         }
 
-        try {
-            const parsed = new URL(url, window.location.href);
-            const extMatch = parsed.pathname.match(/\.([a-zA-Z0-9]{2,5})$/);
-            if (extMatch) return normalizeImageExtension(extMatch[1]);
-        } catch (_) { }
-
-        const formatMatch = url.match(/[?&](?:format|fm)=([a-zA-Z0-9]{2,5})/i);
-        if (formatMatch) return normalizeImageExtension(formatMatch[1]);
-
-        if (/=s\d+-rj\b/i.test(url) || /=w\d+-h\d+-rj\b/i.test(url)) return 'jpg';
-        if (/webp/i.test(url)) return 'webp';
-        if (/png/i.test(url)) return 'png';
-        return 'jpg';
-    }
-
-    function isProbablyGeneratedImageElement(img) {
-        if (!img) return false;
-
-        const src = img.currentSrc || img.getAttribute('src') || '';
-        if (!src) return false;
-        if (!/^https?:|^data:/i.test(src)) return false;
-
-        if (/maps\.googleapis\.com\/maps\/vt/i.test(src)) return false;
-        if (/gstatic\.com\/images\/branding\/productlogos\/maps/i.test(src)) return false;
-        if (/maps\.gstatic\.com\/mapfiles/i.test(src)) return false;
-
-        if (img.closest('generated-image, single-image.generated-image, .generated-image, .generated-images, .attachment-container.generated-images, .image-container.replace-fife-images-at-export')) {
-            return true;
-        }
-
-        if (/googleusercontent\.com\/gg\//i.test(src)) return true;
-        return false;
-    }
-
-    function extractGeneratedImagesFromDom() {
-        const candidates = Array.from(document.querySelectorAll(
-            'generated-image img[src], .attachment-container.generated-images img[src], .image-container.replace-fife-images-at-export img[src], single-image.generated-image img[src], img.image[src]'
-        ));
-
-        const seen = new Set();
-        const images = [];
-
-        candidates.forEach((img) => {
-            if (!isProbablyGeneratedImageElement(img)) return;
-            const rawSrc = (img.currentSrc || img.getAttribute('src') || '').trim();
-            if (!rawSrc) return;
-
-            let absoluteUrl = rawSrc;
-            try {
-                absoluteUrl = new URL(rawSrc, window.location.href).href;
-            } catch (_) { }
-            if (seen.has(absoluteUrl)) return;
-            seen.add(absoluteUrl);
-
-            images.push({
-                url: absoluteUrl,
-                alt: cleanupMarkdown((img.getAttribute('alt') || '').trim()),
-                extension: guessImageExtensionFromUrl(absoluteUrl)
-            });
+        imageExporter = factory({
+            cleanupMarkdown,
+            updateStatus,
+            getCurrentTimestamp,
+            t
         });
 
-        return images;
+        return imageExporter;
+    }
+
+    function getExportPipeline() {
+        if (exportPipeline) return exportPipeline;
+
+        const factory = window.GeminiExportPipeline?.createExportPipeline;
+        if (typeof factory !== 'function') {
+            console.warn('Gemini Export: export pipeline module not loaded.');
+            return null;
+        }
+
+        exportPipeline = factory({
+            t,
+            htmlToMarkdown,
+            getProjectName,
+            getCurrentTimestamp,
+            getExportMode: () => (window.__GEMINI_EXPORT_FORMAT || 'txt').toLowerCase()
+        });
+
+        return exportPipeline;
+    }
+
+    function collectScrollDataForExport() {
+        const pipeline = getExportPipeline();
+        if (pipeline && typeof pipeline.collectSortedData === 'function') {
+            return pipeline.collectSortedData(collectedData);
+        }
+
+        const sorted = [];
+        if (document.querySelector('#chat-history .conversation-container')) {
+            const cs = document.querySelectorAll('#chat-history .conversation-container');
+            cs.forEach((c) => { if (collectedData.has(c)) sorted.push(collectedData.get(c)); });
+        } else {
+            const turns = document.querySelectorAll('ms-chat-turn');
+            turns.forEach((turn) => { if (collectedData.has(turn)) sorted.push(collectedData.get(turn)); });
+        }
+        return sorted;
+    }
+
+    function getExportDispatcher() {
+        if (exportDispatcher) return exportDispatcher;
+
+        const factory = window.GeminiExportDispatcher?.createExportDispatcher;
+        if (typeof factory !== 'function') {
+            console.warn('Gemini Export: export dispatcher module not loaded.');
+            return null;
+        }
+
+        exportDispatcher = factory({
+            t,
+            getIsScrolling: () => isScrolling,
+            setIsScrolling: (value) => { isScrolling = Boolean(value); },
+            getExportButton,
+            updateStatus,
+            onDialog: handleScrollExtraction,
+            onCanvas: handleCanvasExtraction,
+            onBoth: handleCombinedExtraction
+        });
+
+        return exportDispatcher;
+    }
+
+    function getScrollEngine() {
+        if (scrollEngine) return scrollEngine;
+
+        const factory = window.GeminiExportScrollEngine?.createScrollEngine;
+        if (typeof factory !== 'function') {
+            console.warn('Gemini Export: scroll engine module not loaded.');
+            return null;
+        }
+
+        scrollEngine = factory({
+            t,
+            maxScrollAttempts: MAX_SCROLL_ATTEMPTS,
+            scrollDelayMs: SCROLL_DELAY_MS,
+            scrollIncrementFactor: SCROLL_INCREMENT_FACTOR,
+            scrollStabilityChecks: SCROLL_STABILITY_CHECKS,
+            delay,
+            getMainScrollerElement,
+            updateStatus,
+            extractDataIncrementalDispatch: extractDataIncremental_Dispatch,
+            extractDataIncrementalAiStudio: extractDataIncremental_AiStudio,
+            alertFn: (message) => alert(message),
+            getIsScrolling: () => isScrolling,
+            setIsScrolling: (value) => { isScrolling = Boolean(value); },
+            resetCollectionAndCounters: () => {
+                collectedData.clear();
+                scrollCount = 0;
+                noChangeCounter = 0;
+            },
+            getScrollCount: () => scrollCount,
+            setScrollCount: (value) => { scrollCount = Number(value) || 0; },
+            getNoChangeCounter: () => noChangeCounter,
+            setNoChangeCounter: (value) => { noChangeCounter = Number(value) || 0; },
+            getCollectedSize: () => collectedData.size
+        });
+
+        return scrollEngine;
+    }
+
+    function getExportHandlers() {
+        if (exportHandlers) return exportHandlers;
+
+        const factory = window.GeminiExportHandlers?.createExportHandlers;
+        if (typeof factory !== 'function') {
+            console.warn('Gemini Export: export handlers module not loaded.');
+            return null;
+        }
+
+        exportHandlers = factory({
+            t,
+            exportTimeout,
+            getExportButton,
+            updateStatus,
+            delay,
+            getProjectName,
+            extractCanvasContent,
+            formatCanvasDataForExport,
+            triggerExportDownload,
+            exportGeneratedImages,
+            getMainScrollerElement,
+            getIsScrolling: () => isScrolling,
+            setIsScrolling: (value) => { isScrolling = Boolean(value); },
+            clearScrollCollection: () => { collectedData.clear(); },
+            resetScrollCounters: () => {
+                scrollCount = 0;
+                noChangeCounter = 0;
+            },
+            autoScrollDown: autoScrollDown_AiStudio,
+            extractDataIncrementalAiStudio: extractDataIncremental_AiStudio,
+            collectScrollData: collectScrollDataForExport,
+            formatCombinedDataForExport,
+            formatAndExport,
+            getCollectedDataSize: () => collectedData.size,
+            alertFn: (message) => alert(message)
+        });
+
+        return exportHandlers;
     }
 
     async function exportGeneratedImages(projectName) {
-        const images = extractGeneratedImagesFromDom();
-        if (!images.length) return { downloaded: 0, failed: 0, total: 0 };
-
-        updateStatus(t.statusDownloadingImages(images.length));
-
-        try {
-            const response = await sendRuntimeMessage({
-                action: 'DOWNLOAD_IMAGE_BATCH',
-                payload: {
-                    baseName: sanitizeFileNameSegment(projectName),
-                    timestamp: getCurrentTimestamp(),
-                    images
-                }
-            });
-
-            if (!response || response.status !== 'success') {
-                throw new Error(response?.message || 'No response from background service worker');
-            }
-
-            if (Number(response.failed || 0) > 0 && Number(response.downloaded || 0) === 0) {
-                throw new Error(`All image downloads failed (${response.failed})`);
-            }
-
-            return {
-                downloaded: Number(response.downloaded || 0),
-                failed: Number(response.failed || 0),
-                total: images.length
-            };
-        } catch (e) {
-            console.warn('Generated image export failed:', e);
-            return { downloaded: 0, failed: images.length, total: images.length, error: e };
+        const exporter = getImageExporter();
+        if (!exporter || typeof exporter.exportGeneratedImages !== 'function') {
+            return { downloaded: 0, failed: 0, total: 0 };
         }
+        return exporter.exportGeneratedImages(projectName);
     }
 
 
@@ -1575,810 +469,142 @@
     // --- 动态选择器修复逻辑 ---
 
 
-    function generateSelector(el) {
-        if (!el) return '';
-        let tagName = el.tagName.toLowerCase();
-        let classes = Array.from(el.classList).join('.');
-        if (classes) return `${tagName}.${classes}`;
-        if (el.id) return `#${el.id}`;
-
-        // Fallback to hierarchy if no class/id
-        let path = [tagName];
-        let parent = el.parentElement;
-        while (parent && parent !== document.body) {
-            let tag = parent.tagName.toLowerCase();
-            if (parent.id) {
-                path.unshift(`#${parent.id}`);
-                break; // Stop at ID
-            }
-            if (parent.classList.length > 0) {
-                path.unshift(`${tag}.${Array.from(parent.classList)[0]}`);
-            } else {
-                path.unshift(tag);
-            }
-            parent = parent.parentElement;
-        }
-        // Limit path length to avoid overly specific selectors
-        return path.slice(-3).join(' > ');
-    }
-
-    function saveSelectors(newSelectors) {
-        SELECTORS = { ...SELECTORS, ...newSelectors };
-        localStorage.setItem('gemini_export_selectors', JSON.stringify(SELECTORS));
-        console.log(t.logSelectorsUpdated, SELECTORS);
-    }
-
     // Canvas 内容提取和导出逻辑
     function extractCanvasContent() {
-        console.log(t.logExtractingCanvas);
-        const canvasData = [];
-        const seenContents = new Set(); // 用于去重
-
-        // 提取当前页面显示的代码块
-        const codeBlocks = document.querySelectorAll('code-block, pre code, .code-block');
-
-        codeBlocks.forEach((block, index) => {
-            const codeContent = block.textContent || block.innerText;
-            if (codeContent && codeContent.trim()) {
-                const trimmedContent = codeContent.trim();
-                // 使用内容的前100个字符作为唯一性检查
-                const contentKey = trimmedContent.substring(0, 100);
-                if (!seenContents.has(contentKey)) {
-                    seenContents.add(contentKey);
-                    canvasData.push({
-                        type: 'code',
-                        index: canvasData.length + 1,
-                        content: trimmedContent,
-                        language: block.querySelector('[data-lang]')?.getAttribute('data-lang') || 'unknown',
-                        htmlElement: block // 存储 HTML 元素引用
-                    });
-                }
-            }
-        });
-
-        // 提取响应内容中的文本
-        const responseElements = document.querySelectorAll('response-element, .model-response-text, .markdown');
-        responseElements.forEach((element, index) => {
-            // 跳过代码块，避免重复
-            if (!element.closest('code-block') && !element.querySelector('code-block')) {
-                const textContent = element.textContent || element.innerText;
-                if (textContent && textContent.trim()) {
-                    const trimmedContent = textContent.trim();
-                    // 使用内容的前100个字符作为唯一性检查
-                    const contentKey = trimmedContent.substring(0, 100);
-                    if (!seenContents.has(contentKey)) {
-                        seenContents.add(contentKey);
-                        canvasData.push({
-                            type: 'text',
-                            index: canvasData.length + 1,
-                            content: trimmedContent,
-                            htmlElement: element // 存储 HTML 元素引用
-                        });
-                    }
-                }
-            }
-        });
-
-        // 如果没有找到特定元素，尝试从整个聊天容器提取
-        if (canvasData.length === 0) {
-            const chatContainer = document.querySelector('chat-window-content, .conversation-container, model-response');
-            if (chatContainer) {
-                const allText = chatContainer.textContent || chatContainer.innerText;
-                if (allText && allText.trim()) {
-                    const trimmedContent = allText.trim();
-                    const contentKey = trimmedContent.substring(0, 100);
-                    if (!seenContents.has(contentKey)) {
-                        canvasData.push({
-                            type: 'full_content',
-                            index: 1,
-                            content: trimmedContent,
-                            htmlElement: chatContainer // 存储 HTML 元素引用
-                        });
-                    }
-                }
-            }
+        const pipeline = getExportPipeline();
+        if (!pipeline || typeof pipeline.extractCanvasContent !== 'function') {
+            console.warn('Gemini Export: export pipeline unavailable, skip canvas extraction.');
+            return [];
         }
-
-        console.log(t.logCanvasExtracted(canvasData.length));
-        return canvasData;
+        return pipeline.extractCanvasContent();
     }
 
     function formatCanvasDataForExport(canvasData, context) {
-        const mode = (window.__GEMINI_EXPORT_FORMAT || 'txt').toLowerCase();
-        const projectName = getProjectName();
-        const ts = getCurrentTimestamp();
-        const base = projectName;
-
-        function escapeMd(s) {
-            return s.replace(/`/g, '\u0060').replace(/</g, '&lt;');
-        }
-
-        if (mode === 'txt') {
-            let body = `${t.txtCombinedHeader}\n=========================================\n\n`;
-            canvasData.forEach(item => {
-                if (item.type === 'code') {
-                    body += `${t.txtCodeBlock(item.index, item.language)}\n${item.content}\n\n`;
-                } else if (item.type === 'text') {
-                    body += `${t.txtTextBlock(item.index)}\n${item.content}\n\n`;
-                } else {
-                    body += `${t.txtFullContent}\n${item.content}\n\n`;
-                }
-                body += "------------------------------\n\n";
-            });
-            body = body.replace(/\n\n------------------------------\n\n$/, '\n').trim();
-            return { blob: new Blob([body], { type: 'text/plain;charset=utf-8' }), filename: `${base}.txt` };
-        }
-
-        if (mode === 'json') {
-            const jsonData = {
+        const pipeline = getExportPipeline();
+        if (!pipeline || typeof pipeline.formatCanvasDataForExport !== 'function') {
+            const fallback = {
                 exportType: 'canvas',
-                timestamp: ts,
-                projectName: projectName,
-                content: canvasData
+                timestamp: getCurrentTimestamp(),
+                projectName: getProjectName(),
+                content: canvasData || []
             };
-            return { blob: new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json;charset=utf-8' }), filename: `${base}.json` };
+            return {
+                blob: new Blob([JSON.stringify(fallback, null, 2)], { type: 'application/json;charset=utf-8' }),
+                filename: `${getProjectName()}.json`
+            };
+        }
+        return pipeline.formatCanvasDataForExport(canvasData, context);
+    }
+
+    function triggerExportDownload(pack) {
+        const pipeline = getExportPipeline();
+        if (pipeline && typeof pipeline.triggerBlobDownload === 'function') {
+            pipeline.triggerBlobDownload(pack);
+            return;
         }
 
-        if (mode === 'md') {
-            let md = `${t.mdHeaderCanvas(projectName)}\n\n`;
-            md += `${t.mdExportTime(ts)}\n\n`;
-            canvasData.forEach((item, idx) => {
-                md += `${t.mdContentBlock(idx + 1)}\n\n`;
-                if (item.type === 'code') {
-                    // 代码块直接保持原格式
-                    md += `${t.mdCodeBlock(item.language)}\n\n\`\`\`${item.language}\n${item.content}\n\`\`\`\n\n`;
-                } else if (item.type === 'text') {
-                    // 使用 htmlToMarkdown 转换文本内容
-                    if (item.htmlElement) {
-                        const convertedMd = htmlToMarkdown(item.htmlElement);
-                        md += `${t.mdTextBlock}\n\n${convertedMd}\n\n`;
-                    } else {
-                        md += `${t.mdTextBlock}\n\n${escapeMd(item.content)}\n\n`;
-                    }
-                } else {
-                    // full_content 也使用 htmlToMarkdown 转换
-                    if (item.htmlElement) {
-                        const convertedMd = htmlToMarkdown(item.htmlElement);
-                        md += `${t.mdFullContent}\n\n${convertedMd}\n\n`;
-                    } else {
-                        md += `${t.mdFullContent}\n\n${escapeMd(item.content)}\n\n`;
-                    }
-                }
-                md += `---\n\n`;
-            });
-            return { blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename: `${base}.md` };
-        }
+        const a = document.createElement('a');
+        const url = URL.createObjectURL(pack.blob);
+        a.href = url;
+        a.download = pack.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
 
     async function handleCanvasExtraction() {
-        console.log("Starting Canvas Export...");
-        exportButton.disabled = true;
-        exportButton.title = t.btnProcessing;
-
-        try {
-            updateStatus(t.statusStep1);
-            const projectName = getProjectName();
-            const canvasData = extractCanvasContent();
-
-            if (canvasData.length === 0) {
-                alert(t.statusNoCanvas);
-                updateStatus(`Canvas: ${t.statusNoCanvas}`);
-            } else {
-                updateStatus(t.statusProcessing(canvasData.length));
-                const exportData = formatCanvasDataForExport(canvasData, 'export');
-
-                const a = document.createElement('a');
-                const url = URL.createObjectURL(exportData.blob);
-                a.href = url;
-                a.download = exportData.filename;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-
-                const imageExport = await exportGeneratedImages(projectName);
-                if (imageExport.downloaded > 0) {
-                    updateStatus(t.statusSuccessWithImages(exportData.filename, imageExport.downloaded));
-                } else if (imageExport.error) {
-                    updateStatus(t.statusSuccessWithImageWarning(exportData.filename, imageExport.error.message));
-                } else {
-                    updateStatus(t.statusSuccess(exportData.filename));
-                }
-            }
-        } catch (error) {
-            console.error('Canvas Error:', error);
-            updateStatus(t.statusError(error.message));
-        } finally {
-            setTimeout(() => {
-                exportButton.title = t.btnExport;
-                exportButton.disabled = false;
-                updateStatus('');
-            }, exportTimeout);
+        const handlers = getExportHandlers();
+        if (!handlers || typeof handlers.handleCanvasExtraction !== 'function') {
+            console.warn('Gemini Export: canvas export handler unavailable.');
+            return;
         }
+        await handlers.handleCanvasExtraction();
     }
 
     // 组合导出功能：同时导出对话和Canvas内容
     async function handleCombinedExtraction() {
-        console.log("Starting Combined Export...");
-        const projectName = getProjectName();
-
-        // This is a scrolling operation, allow stop
-        exportButton.title = t.btnStop;
-        exportButton.disabled = false;
-
-        try {
-            updateStatus(t.statusStep1);
-            const canvasData = extractCanvasContent();
-
-            updateStatus(t.statusStep2);
-            collectedData.clear();
-            isScrolling = true;
-            scrollCount = 0;
-            noChangeCounter = 0;
-
-            const scroller = getMainScrollerElement();
-            if (scroller) {
-                updateStatus(t.statusReset);
-                const isWindowScroller = (scroller === document.documentElement || scroller === document.body);
-                if (isWindowScroller) {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                } else {
-                    scroller.scrollTo({ top: 0, behavior: 'smooth' });
-                }
-                await delay(1500);
-            }
-
-            const scrollSuccess = await autoScrollDown_AiStudio();
-            if (scrollSuccess !== false) {
-                updateStatus(t.statusProcessing(collectedData.size));
-                await delay(500);
-                extractDataIncremental_AiStudio();
-                await delay(200);
-            } else {
-                throw new Error('Scroll failed');
-            }
-
-            updateStatus(t.statusStep3);
-            let scrollData = [];
-            if (document.querySelector('#chat-history .conversation-container')) {
-                const cs = document.querySelectorAll('#chat-history .conversation-container');
-                cs.forEach(c => { if (collectedData.has(c)) scrollData.push(collectedData.get(c)); });
-            } else {
-                const turns = document.querySelectorAll('ms-chat-turn');
-                turns.forEach(t => { if (collectedData.has(t)) scrollData.push(collectedData.get(t)); });
-            }
-
-            const combinedData = formatCombinedDataForExport(scrollData, canvasData);
-
-            const a = document.createElement('a');
-            const url = URL.createObjectURL(combinedData.blob);
-            a.href = url;
-            a.download = combinedData.filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-
-            const imageExport = await exportGeneratedImages(projectName);
-            if (imageExport.downloaded > 0) {
-                updateStatus(t.statusSuccessWithImages(combinedData.filename, imageExport.downloaded));
-            } else if (imageExport.error) {
-                updateStatus(t.statusSuccessWithImageWarning(combinedData.filename, imageExport.error.message));
-            } else {
-                updateStatus(t.statusSuccess(combinedData.filename));
-            }
-            exportButton.title = t.btnSuccess;
-
-        } catch (error) {
-            console.error('Combined Export Error:', error);
-            updateStatus(t.statusError(error.message));
-            exportButton.title = t.btnError;
-        } finally {
-            isScrolling = false;
-            setTimeout(() => {
-                exportButton.title = t.btnExport;
-                exportButton.disabled = false;
-                updateStatus('');
-            }, exportTimeout);
+        const handlers = getExportHandlers();
+        if (!handlers || typeof handlers.handleCombinedExtraction !== 'function') {
+            console.warn('Gemini Export: combined export handler unavailable.');
+            return;
         }
+        await handlers.handleCombinedExtraction();
     }
 
     // 组合数据格式化和导出函数
     function formatCombinedDataForExport(scrollData, canvasData) {
-        const mode = (window.__GEMINI_EXPORT_FORMAT || 'txt').toLowerCase();
-        const projectName = getProjectName();
-        const ts = getCurrentTimestamp();
-        const base = projectName;
-
-        function escapeMd(s) {
-            return s.replace(/`/g, '\u0060').replace(/</g, '&lt;');
-        }
-
-        // 对对话数据进行去重处理
-        function deduplicateScrollData(data) {
-            if (!data || !Array.isArray(data)) return [];
-
-            const seen = new Set();
-            const deduplicated = [];
-
-            data.forEach(item => {
-                // 创建内容的唯一标识符
-                const contentKey = [
-                    item.userText || '',
-                    item.thoughtText || '',
-                    item.responseText || ''
-                ].join('|||').substring(0, 200); // 使用前200个字符作为唯一性标识
-
-                if (!seen.has(contentKey)) {
-                    seen.add(contentKey);
-                    deduplicated.push(item);
-                }
-            });
-
-            return deduplicated;
-        }
-
-        // 去重处理
-        const deduplicatedScrollData = deduplicateScrollData(scrollData);
-
-        if (mode === 'txt') {
-            let body = `${t.txtCombinedHeader}
-=========================================
-
-`;
-
-            // 添加对话内容
-            if (deduplicatedScrollData && deduplicatedScrollData.length > 0) {
-                body += `${t.txtDialogSection}
-
-`;
-                deduplicatedScrollData.forEach(item => {
-                    let block = '';
-                    if (item.userText) block += `${t.txtUser}\n${item.userText}\n\n`;
-                    if (item.thoughtText) block += `${t.txtAIThought}\n${item.thoughtText}\n\n`;
-                    if (item.responseText) block += `${t.txtAIResponse}\n${item.responseText}\n\n`;
-                    body += block.trim() + "\n\n------------------------------\n\n";
-                });
-            }
-
-            // 添加Canvas内容
-            if (canvasData && canvasData.length > 0) {
-                body += `\n\n${t.txtCanvasSection}\n\n`;
-                canvasData.forEach(item => {
-                    if (item.type === 'code') {
-                        body += `${t.txtCodeBlock(item.index, item.language)}\n${item.content}\n\n`;
-                    } else if (item.type === 'text') {
-                        body += `${t.txtTextBlock(item.index)}\n${item.content}\n\n`;
-                    } else {
-                        body += `${t.txtFullContent}\n${item.content}\n\n`;
-                    }
-                    body += "------------------------------\n\n";
-                });
-            }
-
-            body = body.replace(/\n\n------------------------------\n\n$/, '\n').trim();
-            return { blob: new Blob([body], { type: 'text/plain;charset=utf-8' }), filename: `${base}.txt` };
-        }
-
-        if (mode === 'json') {
-            const jsonData = {
+        const pipeline = getExportPipeline();
+        if (!pipeline || typeof pipeline.formatCombinedDataForExport !== 'function') {
+            const fallback = {
                 exportType: 'combined',
-                timestamp: ts,
-                projectName: projectName,
-                dialogue: [],
+                timestamp: getCurrentTimestamp(),
+                projectName: getProjectName(),
+                dialogue: scrollData || [],
                 canvas: canvasData || []
             };
-
-            // 添加对话数据
-            if (deduplicatedScrollData && deduplicatedScrollData.length > 0) {
-                deduplicatedScrollData.forEach(item => {
-                    if (item.userText) jsonData.dialogue.push({ role: 'user', content: item.userText, id: `${item.domOrder}-user` });
-                    if (item.thoughtText) jsonData.dialogue.push({ role: 'thought', content: item.thoughtText, id: `${item.domOrder}-thought` });
-                    if (item.responseText) jsonData.dialogue.push({ role: 'assistant', content: item.responseText, id: `${item.domOrder}-assistant` });
-                });
-            }
-
-            return { blob: new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json;charset=utf-8' }), filename: `${base}.json` };
+            return {
+                blob: new Blob([JSON.stringify(fallback, null, 2)], { type: 'application/json;charset=utf-8' }),
+                filename: `${getProjectName()}.json`
+            };
         }
-
-        if (mode === 'md') {
-            let md = `${t.mdHeaderCombined(projectName)}\n\n${t.mdExportTime(ts)}\n\n`;
-
-            // 添加对话内容
-            if (deduplicatedScrollData && deduplicatedScrollData.length > 0) {
-                md += `## ${t.txtDialogSection.replace(/=== /g, '')}\n\n`;
-                deduplicatedScrollData.forEach((item, idx) => {
-                    md += `${t.mdTurn(idx + 1)}\n\n`;
-                    if (item.userText) md += `${t.mdUser}\n\n${escapeMd(item.userText)}\n\n`;
-                    if (item.thoughtText) md += `<details><summary>${t.mdAIThought}</summary>\n\n${escapeMd(item.thoughtText)}\n\n</details>\n\n`;
-
-                    // 使用 htmlToMarkdown 转换 AI 回复，保留格式
-                    if (item.responseHtml) {
-                        const responseMd = htmlToMarkdown(item.responseHtml);
-                        md += `${t.mdAIResponse}\n\n${responseMd}\n\n`;
-                    } else if (item.responseHtmlElements && item.responseHtmlElements.length > 0) {
-                        const responseMd = item.responseHtmlElements.map(el => htmlToMarkdown(el)).join('\n\n');
-                        md += `${t.mdAIResponse}\n\n${responseMd}\n\n`;
-                    } else if (item.responseText) {
-                        md += `${t.mdAIResponse}\n\n${escapeMd(item.responseText)}\n\n`;
-                    }
-
-                    md += `---\n\n`;
-                });
-            }
-
-            // 添加Canvas内容
-            if (canvasData && canvasData.length > 0) {
-                md += `## ${t.txtCanvasSection.replace(/=== /g, '')}\n\n`;
-                canvasData.forEach((item, idx) => {
-                    md += `${t.mdContentBlock(idx + 1)}\n\n`;
-                    if (item.type === 'code') {
-                        // 代码块直接保持原格式
-                        md += `${t.mdCodeBlock(item.language)}\n\n\`\`\`${item.language}\n${item.content}\n\`\`\`\n\n`;
-                    } else if (item.type === 'text') {
-                        // 使用 htmlToMarkdown 转换文本内容
-                        if (item.htmlElement) {
-                            const convertedMd = htmlToMarkdown(item.htmlElement);
-                            md += `${t.mdTextBlock}\n\n${convertedMd}\n\n`;
-                        } else {
-                            md += `${t.mdTextBlock}\n\n${escapeMd(item.content)}\n\n`;
-                        }
-                    } else {
-                        // full_content 也使用 htmlToMarkdown 转换
-                        if (item.htmlElement) {
-                            const convertedMd = htmlToMarkdown(item.htmlElement);
-                            md += `${t.mdFullContent}\n\n${convertedMd}\n\n`;
-                        } else {
-                            md += `${t.mdFullContent}\n\n${escapeMd(item.content)}\n\n`;
-                        }
-                    }
-                    md += `---\n\n`;
-                });
-            }
-
-            return { blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename: `${base}.md` };
-        }
+        return pipeline.formatCombinedDataForExport(scrollData, canvasData);
     }
     function extractDataIncremental_AiStudio() {
-        let newlyFoundCount = 0;
-        let dataUpdatedInExistingTurn = false;
-        const currentTurns = document.querySelectorAll('ms-chat-turn');
-        const seenUserTexts = new Set(); // 用于去重用户消息
-
-        currentTurns.forEach((turn, index) => {
-            const turnKey = turn;
-            const turnContainer = turn.querySelector('.chat-turn-container.user, .chat-turn-container.model');
-            if (!turnContainer) {
-                return;
-            }
-
-            let isNewTurn = !collectedData.has(turnKey);
-            let extractedInfo = collectedData.get(turnKey) || {
-                domOrder: index, type: 'unknown', userText: null, thoughtText: null, responseText: null
-            };
-            if (isNewTurn) {
-                collectedData.set(turnKey, extractedInfo);
-                newlyFoundCount++;
-            }
-
-            let dataWasUpdatedThisTime = false;
-
-            if (turnContainer.classList.contains('user')) {
-                if (extractedInfo.type === 'unknown') extractedInfo.type = 'user';
-                if (!extractedInfo.userText) {
-                    let userNode = turn.querySelector('.turn-content ms-cmark-node');
-                    let userText = userNode ? userNode.innerText.trim() : null;
-                    if (userText) {
-                        // 检查是否已经存在相同的用户消息
-                        if (!seenUserTexts.has(userText)) {
-                            seenUserTexts.add(userText);
-                            extractedInfo.userText = userText;
-                            dataWasUpdatedThisTime = true;
-                        }
-                    }
-                }
-            } else if (turnContainer.classList.contains('model')) {
-                if (extractedInfo.type === 'unknown') extractedInfo.type = 'model';
-
-                if (!extractedInfo.thoughtText) {
-                    let thoughtNode = turn.querySelector('.thought-container .mat-expansion-panel-body');
-                    if (thoughtNode) {
-                        let thoughtText = thoughtNode.textContent.trim();
-                        if (thoughtText && thoughtText.toLowerCase() !== 'thinking process:') {
-                            extractedInfo.thoughtText = thoughtText;
-                            dataWasUpdatedThisTime = true;
-                        }
-                    }
-                }
-
-                if (!extractedInfo.responseText) {
-                    const responseChunks = Array.from(turn.querySelectorAll('.turn-content > ms-prompt-chunk'));
-                    const responseElements = responseChunks
-                        .filter(chunk => !chunk.querySelector('.thought-container'))
-                        .map(chunk => chunk.querySelector('ms-cmark-node') || chunk)
-                        .filter(el => el && el.innerText?.trim());
-
-                    const responseTexts = responseElements.map(el => el.innerText.trim());
-
-                    if (responseTexts.length > 0) {
-                        extractedInfo.responseText = responseTexts.join('\n\n');
-                        extractedInfo.responseHtmlElements = responseElements; // 存储 HTML 元素引用
-                        dataWasUpdatedThisTime = true;
-                    } else if (!extractedInfo.thoughtText) {
-                        const turnContent = turn.querySelector('.turn-content');
-                        if (turnContent) {
-                            extractedInfo.responseText = turnContent.innerText.trim();
-                            extractedInfo.responseHtmlElements = [turnContent];
-                            dataWasUpdatedThisTime = true;
-                        }
-                    }
-                }
-
-                if (dataWasUpdatedThisTime) {
-                    if (extractedInfo.thoughtText && extractedInfo.responseText) extractedInfo.type = 'model_thought_reply';
-                    else if (extractedInfo.responseText) extractedInfo.type = 'model_reply';
-                    else if (extractedInfo.thoughtText) extractedInfo.type = 'model_thought';
-                }
-            }
-
-            if (dataWasUpdatedThisTime) {
-                collectedData.set(turnKey, extractedInfo);
-                dataUpdatedInExistingTurn = true;
-            }
-        });
-
-        if (currentTurns.length > 0 && collectedData.size === 0) {
-            console.warn(t.statusWarnNoData);
-            updateStatus(t.statusWarnNoData);
-        } else {
-            updateStatus(t.statusScrolling(scrollCount, MAX_SCROLL_ATTEMPTS, collectedData.size));
+        const extractor = window.GeminiExportConversationExtractor;
+        if (!extractor || typeof extractor.extractDataIncrementalAiStudio !== 'function') {
+            console.warn('Gemini Export: conversation extractor module not loaded.');
+            return false;
         }
 
-
-        return newlyFoundCount > 0 || dataUpdatedInExistingTurn;
+        return extractor.extractDataIncrementalAiStudio({
+            collectedData,
+            updateStatus,
+            scrollCount,
+            maxScrollAttempts: MAX_SCROLL_ATTEMPTS,
+            t
+        });
     }
 
     async function autoScrollDown_AiStudio() {
-        console.log(t.logFindingScroller);
-        isScrolling = true; collectedData.clear(); scrollCount = 0; noChangeCounter = 0;
-        const scroller = getMainScrollerElement();
-        if (!scroller) {
-            updateStatus(t.statusScrollError);
-            alert(t.statusScrollNotFoundAlert);
-            isScrolling = false; return false;
+        const engine = getScrollEngine();
+        if (!engine || typeof engine.autoScrollDown !== 'function') {
+            console.warn('Gemini Export: auto scroll engine unavailable.');
+            return false;
         }
-        console.log('使用的滚动元素(滚动导出):', scroller);
-        const isWindowScroller = (scroller === document.documentElement || scroller === document.body);
-        const getScrollTop = () => isWindowScroller ? window.scrollY : scroller.scrollTop;
-        const getScrollHeight = () => isWindowScroller ? document.documentElement.scrollHeight : scroller.scrollHeight;
-        const getClientHeight = () => isWindowScroller ? window.innerHeight : scroller.clientHeight;
-        updateStatus(t.statusScrolling(0, MAX_SCROLL_ATTEMPTS, 0));
-        let lastScrollHeight = -1;
-
-        while (scrollCount < MAX_SCROLL_ATTEMPTS && isScrolling) {
-            const currentScrollTop = getScrollTop(); const currentScrollHeight = getScrollHeight(); const currentClientHeight = getClientHeight();
-            if (currentScrollHeight === lastScrollHeight) { noChangeCounter++; } else { noChangeCounter = 0; }
-            lastScrollHeight = currentScrollHeight;
-            if (noChangeCounter >= SCROLL_STABILITY_CHECKS && currentScrollTop + currentClientHeight >= currentScrollHeight - 20) {
-                console.log(t.statusScrollCompleteBottom);
-                updateStatus(t.statusScrollCompleteBottom);
-                break;
-            }
-            if (currentScrollTop === 0 && scrollCount > 10) {
-                console.log(t.statusScrollCompleteTop);
-                updateStatus(t.statusScrollCompleteTop);
-                break;
-            }
-            const targetScrollTop = currentScrollTop + (currentClientHeight * SCROLL_INCREMENT_FACTOR);
-            if (isWindowScroller) { window.scrollTo({ top: targetScrollTop, behavior: 'smooth' }); } else { scroller.scrollTo({ top: targetScrollTop, behavior: 'smooth' }); }
-            scrollCount++;
-            updateStatus(t.statusScrolling(scrollCount, MAX_SCROLL_ATTEMPTS, collectedData.size));
-            await delay(SCROLL_DELAY_MS);
-            // 使用统一调度：优先 Gemini 结构，其次 AI Studio
-            try { extractDataIncremental_Dispatch(); } catch (e) { console.warn('调度提取失败，回退 AI Studio 提取', e); try { extractDataIncremental_AiStudio(); } catch (_) { } }
-            if (!isScrolling) {
-                console.log("检测到手动停止信号 (滚动导出)，退出滚动循环。"); break;
-            }
-        }
-
-        if (!isScrolling && scrollCount < MAX_SCROLL_ATTEMPTS) {
-            updateStatus(t.statusScrollManualStop(scrollCount));
-        } else if (scrollCount >= MAX_SCROLL_ATTEMPTS) {
-            updateStatus(t.statusScrollMaxAttempts(MAX_SCROLL_ATTEMPTS));
-        }
-        isScrolling = false;
-        return true;
+        return engine.autoScrollDown();
     }
 
     function formatAndExport(sortedData, context) { // 多格式骨架
-        const mode = (window.__GEMINI_EXPORT_FORMAT || 'txt').toLowerCase();
-        const projectName = getProjectName();
-        const ts = getCurrentTimestamp();
-        const base = projectName;
-
-        // 对数据进行去重处理
-        function deduplicateData(data) {
-            if (!data || !Array.isArray(data)) return [];
-
-            const seen = new Set();
-            const deduplicated = [];
-
-            data.forEach(item => {
-                // 创建内容的唯一标识符
-                const contentKey = [
-                    item.userText || '',
-                    item.thoughtText || '',
-                    item.responseText || ''
-                ].join('|||').substring(0, 200); // 使用前200个字符作为唯一性标识
-
-                if (!seen.has(contentKey)) {
-                    seen.add(contentKey);
-                    deduplicated.push(item);
-                }
-            });
-
-            return deduplicated;
+        const pipeline = getExportPipeline();
+        if (!pipeline || typeof pipeline.formatScrollDataForExport !== 'function') {
+            const fallback = sortedData || [];
+            return {
+                blob: new Blob([JSON.stringify(fallback, null, 2)], { type: 'application/json;charset=utf-8' }),
+                filename: `${getProjectName()}.json`
+            };
         }
-
-        // 去重处理
-        const deduplicatedData = deduplicateData(sortedData);
-
-        function escapeMd(s) {
-            return s.replace(/`/g, '\u0060').replace(/</g, '&lt;');
-        }
-        if (mode === 'txt') {
-            let header = context === 'scroll' ? t.txtHeaderScroll : t.txtHeaderSDK;
-            let body = `${header}\n=========================================\n\n`;
-            deduplicatedData.forEach(item => {
-                let block = '';
-                if (item.userText) block += `${t.txtUser}\n${item.userText}\n\n`;
-                if (item.thoughtText) block += `${t.txtAIThought}\n${item.thoughtText}\n\n`;
-                if (item.responseText) block += `${t.txtAIResponse}\n${item.responseText}\n\n`;
-                if (!block) {
-                    block = `${t.txtIncompleteTurn}\n`;
-                    if (item.thoughtText) block += `${t.txtThoughtIncomplete} ${item.thoughtText}\n`;
-                    if (item.responseText) block += `${t.txtResponseIncomplete} ${item.responseText}\n`;
-                    block += '\n';
-                }
-                body += block.trim() + "\n\n------------------------------\n\n";
-            });
-            body = body.replace(/\n\n------------------------------\n\n$/, '\n').trim();
-            return { blob: new Blob([body], { type: 'text/plain;charset=utf-8' }), filename: `${base}.txt` };
-        }
-        if (mode === 'json') {
-            let arr = [];
-            deduplicatedData.forEach(item => {
-                if (item.userText) arr.push({ role: 'user', content: item.userText, id: `${item.domOrder}-user` });
-                if (item.thoughtText) arr.push({ role: 'thought', content: item.thoughtText, id: `${item.domOrder}-thought` });
-                if (item.responseText) arr.push({ role: 'assistant', content: item.responseText, id: `${item.domOrder}-assistant` });
-            });
-            return { blob: new Blob([JSON.stringify(arr, null, 2)], { type: 'application/json;charset=utf-8' }), filename: `${base}.json` };
-        }
-        if (mode === 'md') { // 正式 Markdown 格式 - 使用 Turndown 转换
-            let md = `${t.mdHeaderScroll(projectName, context)}\n\n`;
-            md += `${t.mdExportTime(ts)}\n\n`;
-            deduplicatedData.forEach((item, idx) => {
-                md += `${t.mdTurn(idx + 1)}\n\n`;
-                if (item.userText) md += `${t.mdUser}\n\n${escapeMd(item.userText)}\n\n`;
-                if (item.thoughtText) md += `<details><summary>${t.mdAIThought}</summary>\n\n${escapeMd(item.thoughtText)}\n\n</details>\n\n`;
-
-                // 使用 htmlToMarkdown 转换 AI 回复，保留格式
-                if (item.responseHtml) {
-                    // Gemini 格式：单个 HTML 元素
-                    const responseMd = htmlToMarkdown(item.responseHtml);
-                    md += `${t.mdAIResponse}\n\n${responseMd}\n\n`;
-                } else if (item.responseHtmlElements && item.responseHtmlElements.length > 0) {
-                    // AI Studio 格式：多个 HTML 元素
-                    const responseMd = item.responseHtmlElements.map(el => htmlToMarkdown(el)).join('\n\n');
-                    md += `${t.mdAIResponse}\n\n${responseMd}\n\n`;
-                } else if (item.responseText) {
-                    // 回退到纯文本
-                    md += `${t.mdAIResponse}\n\n${escapeMd(item.responseText)}\n\n`;
-                }
-
-                md += `---\n\n`;
-            });
-            return { blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename: `${base}.md` };
-        }
+        return pipeline.formatScrollDataForExport(sortedData, context);
     }
     async function formatAndTriggerDownloadScroll() {
-        updateStatus(t.logGeneratingFile(collectedData.size));
-        const projectName = getProjectName();
-        let sorted = [];
-        if (document.querySelector('#chat-history .conversation-container')) {
-            const cs = document.querySelectorAll('#chat-history .conversation-container');
-            cs.forEach(c => { if (collectedData.has(c)) sorted.push(collectedData.get(c)); });
-        } else {
-            const turns = document.querySelectorAll('ms-chat-turn');
-            turns.forEach(t => { if (collectedData.has(t)) sorted.push(collectedData.get(t)); });
-        }
-        if (!sorted.length) {
-            updateStatus(t.statusNoDialog);
-            alert(t.statusNoDialog);
-            exportButton.title = t.btnExport;
-            exportButton.disabled = false;
-            updateStatus('');
+        const handlers = getExportHandlers();
+        if (!handlers || typeof handlers.formatAndTriggerDownloadScroll !== 'function') {
+            console.warn('Gemini Export: scroll export download handler unavailable.');
             return;
         }
-        try {
-            const pack = formatAndExport(sorted, 'scroll');
-            const a = document.createElement('a');
-            const url = URL.createObjectURL(pack.blob);
-            a.href = url; a.download = pack.filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-            const imageExport = await exportGeneratedImages(projectName);
-            if (imageExport.downloaded > 0) {
-                updateStatus(t.statusSuccessWithImages(pack.filename, imageExport.downloaded));
-            } else if (imageExport.error) {
-                updateStatus(t.statusSuccessWithImageWarning(pack.filename, imageExport.error.message));
-            } else {
-                updateStatus(t.statusSuccess(pack.filename));
-            }
-            exportButton.title = t.btnSuccess;
-        } catch (e) {
-            console.error('File generation failed:', e);
-            exportButton.title = t.btnError;
-            alert('Error generating file: ' + e.message);
-        }
-        setTimeout(() => {
-            exportButton.title = t.btnExport;
-            exportButton.disabled = false;
-            updateStatus('');
-        }, exportTimeout);
+        await handlers.formatAndTriggerDownloadScroll();
     }
 
     // TODO 2025-09-08: 后续可实现自动展开 Gemini 隐藏思维链（需要模拟点击“显示思路”按钮），当前以占位符标记
     // TODO 2025-09-08: Markdown 正式格式化尚未实现，当前仅输出占位头部，保持向后兼容
 
     async function handleScrollExtraction() {
-        if (isScrolling) return; // Should catch by handleExportClick earlier, but safety check.
-
-        exportButton.title = t.btnStop;
-        exportButton.disabled = false;
-
-        const scroller = getMainScrollerElement();
-        if (scroller) {
-            updateStatus(t.statusReset);
-            const isWindowScroller = (scroller === document.documentElement || scroller === document.body);
-            if (isWindowScroller) {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-            } else {
-                scroller.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-            await delay(1500);
+        const handlers = getExportHandlers();
+        if (!handlers || typeof handlers.handleScrollExtraction !== 'function') {
+            console.warn('Gemini Export: scroll extraction handler unavailable.');
+            return;
         }
-
-        updateStatus(t.statusScanning);
-
-        try {
-            const scrollSuccess = await autoScrollDown_AiStudio();
-            if (scrollSuccess !== false) {
-                exportButton.title = t.btnProcessing;
-                updateStatus(t.statusProcessing(collectedData.size));
-                await delay(500);
-                extractDataIncremental_AiStudio();
-                await delay(200);
-                await formatAndTriggerDownloadScroll();
-            } else {
-                exportButton.title = t.btnFailed;
-                setTimeout(() => {
-                    exportButton.title = t.btnExport;
-                    exportButton.disabled = false;
-                    updateStatus('');
-                }, exportTimeout);
-            }
-        } catch (error) {
-            console.error('Scroll Error:', error);
-            updateStatus(t.statusError(error.message));
-            exportButton.title = t.btnError;
-            setTimeout(() => {
-                exportButton.title = t.btnExport;
-                exportButton.disabled = false;
-                updateStatus('');
-            }, exportTimeout);
-            isScrolling = false;
-        } finally {
-            isScrolling = false;
-        }
+        await handlers.handleScrollExtraction();
     }
 
     // --- 脚本初始化入口 ---

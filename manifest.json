@@ -36,6 +36,20 @@
       "js": [
         "src/lib/turndown.min.js",
         "src/lib/turndown-plugin-gfm.min.js",
+        "src/content/modules/bootstrap_utils.js",
+        "src/content/modules/project_utils.js",
+        "src/content/modules/i18n.js",
+        "src/content/modules/markdown_converter.js",
+        "src/content/modules/scroller.js",
+        "src/content/modules/scroll_engine.js",
+        "src/content/modules/conversation_extractor.js",
+        "src/content/modules/image_exporter.js",
+        "src/content/modules/anchor_panel.js",
+        "src/content/modules/export_pipeline.js",
+        "src/content/modules/export_handlers.js",
+        "src/content/modules/export_dispatcher.js",
+        "src/content/modules/ui_controller.js",
+        "src/content/modules/theme_sync.js",
         "src/content/content_script.js"
       ]
     }
