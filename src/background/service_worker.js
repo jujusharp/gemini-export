@@ -4,6 +4,11 @@ try {
 } catch (e) {
     console.error("Failed to load JSZip:", e);
 }
+try {
+    importScripts('./watermark_processor.js');
+} catch (e) {
+    console.error('Failed to load watermark processor:', e);
+}
 
 console.log('Gemini Export: Service Worker Loaded');
 
@@ -190,6 +195,110 @@ function buildImageFilename(baseName, timestamp, index, image) {
     return `${safeBaseName}_images_${safeTimestamp}/generated_${fileIndex}.${extension}`;
 }
 
+function arrayBufferToBase64(arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer);
+    const chunkSize = 0x8000;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+}
+
+async function blobToDataUrl(blob) {
+    const arrayBuffer = await blob.arrayBuffer();
+    const base64 = arrayBufferToBase64(arrayBuffer);
+    const mime = blob.type || 'application/octet-stream';
+    return `data:${mime};base64,${base64}`;
+}
+
+async function createDownloadUrlFromBlob(blob) {
+    if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        const objectUrl = URL.createObjectURL(blob);
+        return {
+            url: objectUrl,
+            revoke: () => {
+                try { URL.revokeObjectURL(objectUrl); } catch (_) { }
+            }
+        };
+    }
+    const dataUrl = await blobToDataUrl(blob);
+    return {
+        url: dataUrl,
+        revoke: null
+    };
+}
+
+async function fetchImageBlobForProcessing(imageUrl) {
+    if (/^data:/i.test(imageUrl)) {
+        const dataResponse = await fetch(imageUrl);
+        if (!dataResponse.ok) {
+            throw new Error(`Data URL decode failed (${dataResponse.status})`);
+        }
+        return dataResponse.blob();
+    }
+
+    const strategies = [
+        // Avoid CORS credential mismatch (`Access-Control-Allow-Origin: *` + include)
+        { credentials: 'omit', cache: 'no-store' },
+        { credentials: 'same-origin', cache: 'no-store' },
+        { credentials: 'omit', cache: 'force-cache' }
+    ];
+
+    let lastError = null;
+    for (const strategy of strategies) {
+        try {
+            const response = await fetch(imageUrl, {
+                method: 'GET',
+                mode: 'cors',
+                credentials: strategy.credentials,
+                cache: strategy.cache,
+                redirect: 'follow'
+            });
+            if (!response.ok) {
+                lastError = new Error(`Image fetch failed (${response.status}) with credentials=${strategy.credentials}, cache=${strategy.cache}`);
+                continue;
+            }
+            return response.blob();
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    throw lastError || new Error('Image fetch failed with all strategies.');
+}
+
+async function downloadWatermarkProcessedImage(baseName, timestamp, index, image, imageUrl) {
+    const processor = globalThis.GeminiWatermarkProcessor;
+    if (!processor || typeof processor.removeVisibleWatermarkFromBlob !== 'function') {
+        throw new Error('Gemini watermark processor is unavailable.');
+    }
+
+    const inputBlob = await fetchImageBlobForProcessing(imageUrl);
+    const result = await processor.removeVisibleWatermarkFromBlob(inputBlob, {
+        outputType: 'image/png',
+        outputQuality: 1
+    });
+
+    const extension = normalizeImageExtension(result?.extension || 'png');
+    const filename = buildImageFilename(baseName, timestamp, index, { ...image, extension });
+    const downloadable = await createDownloadUrlFromBlob(result.blob);
+
+    try {
+        await chrome.downloads.download({
+            url: downloadable.url,
+            filename,
+            saveAs: false,
+            conflictAction: 'uniquify'
+        });
+    } finally {
+        if (typeof downloadable.revoke === 'function') {
+            setTimeout(() => downloadable.revoke(), 30_000);
+        }
+    }
+}
+
 async function handleImageBatchDownload(payload) {
     const images = Array.isArray(payload?.images) ? payload.images : [];
     if (images.length === 0) {
@@ -198,9 +307,13 @@ async function handleImageBatchDownload(payload) {
 
     const baseName = payload?.baseName || 'GeminiChat';
     const timestamp = payload?.timestamp || '';
+    const removeWatermark = payload?.removeWatermark !== false;
+    const fallbackToOriginal = payload?.fallbackToOriginal !== false;
 
     let downloaded = 0;
     let failed = 0;
+    let watermarkRemoved = 0;
+    let watermarkFallback = 0;
 
     for (let i = 0; i < images.length; i++) {
         const image = images[i] || {};
@@ -208,6 +321,22 @@ async function handleImageBatchDownload(payload) {
         if (!imageUrl || !/^https?:|^data:/i.test(imageUrl)) {
             failed++;
             continue;
+        }
+
+        if (removeWatermark) {
+            try {
+                await downloadWatermarkProcessedImage(baseName, timestamp, i, image, imageUrl);
+                downloaded++;
+                watermarkRemoved++;
+                continue;
+            } catch (processingError) {
+                console.warn('Failed to process watermark removal, fallback to original download.', imageUrl, processingError);
+                if (!fallbackToOriginal) {
+                    failed++;
+                    continue;
+                }
+                watermarkFallback++;
+            }
         }
 
         const filename = buildImageFilename(baseName, timestamp, i, image);
@@ -219,11 +348,18 @@ async function handleImageBatchDownload(payload) {
                 conflictAction: 'uniquify'
             });
             downloaded++;
-        } catch (e) {
+        } catch (downloadError) {
             failed++;
-            console.warn('Failed to download generated image:', imageUrl, e);
+            console.warn('Failed to download generated image:', imageUrl, downloadError);
         }
     }
 
-    return { downloaded, failed, total: images.length };
+    return {
+        downloaded,
+        failed,
+        total: images.length,
+        watermarkRemoved,
+        watermarkFallback,
+        removeWatermark
+    };
 }

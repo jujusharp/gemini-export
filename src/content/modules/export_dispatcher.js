@@ -28,18 +28,20 @@
         async function readExportSettings() {
             let format = 'md';
             let type = 'both';
+            let removeWatermark = true;
 
             try {
                 if (chrome && chrome.storage && chrome.storage.local) {
-                    const settings = await chrome.storage.local.get(['exportFormat', 'exportType']);
+                    const settings = await chrome.storage.local.get(['exportFormat', 'exportType', 'removeWatermark']);
                     format = settings.exportFormat || 'md';
                     type = settings.exportType || 'both';
+                    removeWatermark = settings.removeWatermark !== false;
                 }
             } catch (e) {
                 console.warn('Failed to read settings from chrome.storage, using defaults:', e);
             }
 
-            return { format, type };
+            return { format, type, removeWatermark };
         }
 
         async function handleExportClick() {
@@ -57,9 +59,10 @@
                 return;
             }
 
-            const { format, type } = await readExportSettings();
+            const { format, type, removeWatermark } = await readExportSettings();
 
             window.__GEMINI_EXPORT_FORMAT = format;
+            window.__GEMINI_EXPORT_REMOVE_WATERMARK = removeWatermark;
 
             console.log(t.logStartingExport(type, format));
             updateStatus(`${t.statusStarting} (${type}, ${format})`);

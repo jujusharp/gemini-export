@@ -65,6 +65,15 @@
             ? options.alertFn
             : (message) => window.alert(message);
 
+        function appendWatermarkStats(message, imageExport) {
+            if (!imageExport || imageExport.removeWatermark !== true) {
+                return message;
+            }
+            const removed = Number(imageExport.watermarkRemoved || 0);
+            const fallback = Number(imageExport.watermarkFallback || 0);
+            return `${message} (Watermark removed: ${removed}, fallback: ${fallback})`;
+        }
+
         function scheduleButtonReset() {
             const button = getExportButton();
             window.setTimeout(() => {
@@ -115,7 +124,10 @@
 
                     const imageExport = await exportGeneratedImages(projectName);
                     if (imageExport.downloaded > 0) {
-                        updateStatus(t.statusSuccessWithImages(exportData.filename, imageExport.downloaded));
+                        updateStatus(appendWatermarkStats(
+                            t.statusSuccessWithImages(exportData.filename, imageExport.downloaded),
+                            imageExport
+                        ));
                     } else if (imageExport.error) {
                         updateStatus(t.statusSuccessWithImageWarning(exportData.filename, imageExport.error.message));
                     } else {
@@ -169,7 +181,10 @@
 
                 const imageExport = await exportGeneratedImages(projectName);
                 if (imageExport.downloaded > 0) {
-                    updateStatus(t.statusSuccessWithImages(combinedData.filename, imageExport.downloaded));
+                    updateStatus(appendWatermarkStats(
+                        t.statusSuccessWithImages(combinedData.filename, imageExport.downloaded),
+                        imageExport
+                    ));
                 } else if (imageExport.error) {
                     updateStatus(t.statusSuccessWithImageWarning(combinedData.filename, imageExport.error.message));
                 } else {
@@ -208,7 +223,10 @@
                 triggerExportDownload(pack);
                 const imageExport = await exportGeneratedImages(projectName);
                 if (imageExport.downloaded > 0) {
-                    updateStatus(t.statusSuccessWithImages(pack.filename, imageExport.downloaded));
+                    updateStatus(appendWatermarkStats(
+                        t.statusSuccessWithImages(pack.filename, imageExport.downloaded),
+                        imageExport
+                    ));
                 } else if (imageExport.error) {
                     updateStatus(t.statusSuccessWithImageWarning(pack.filename, imageExport.error.message));
                 } else {

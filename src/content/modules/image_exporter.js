@@ -124,6 +124,8 @@
             const images = extractGeneratedImagesFromDom();
             if (!images.length) return { downloaded: 0, failed: 0, total: 0 };
 
+            const removeWatermark = window.__GEMINI_EXPORT_REMOVE_WATERMARK !== false;
+
             const statusText = typeof t.statusDownloadingImages === 'function'
                 ? t.statusDownloadingImages(images.length)
                 : `Downloading ${images.length} generated images...`;
@@ -135,7 +137,9 @@
                     payload: {
                         baseName: sanitizeFileNameSegment(projectName),
                         timestamp: getCurrentTimestamp(),
-                        images
+                        images,
+                        removeWatermark,
+                        fallbackToOriginal: true
                     }
                 });
 
@@ -150,7 +154,10 @@
                 return {
                     downloaded: Number(response.downloaded || 0),
                     failed: Number(response.failed || 0),
-                    total: images.length
+                    total: images.length,
+                    watermarkRemoved: Number(response.watermarkRemoved || 0),
+                    watermarkFallback: Number(response.watermarkFallback || 0),
+                    removeWatermark
                 };
             } catch (e) {
                 console.warn('Generated image export failed:', e);

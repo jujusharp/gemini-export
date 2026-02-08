@@ -10,7 +10,10 @@
     "storage"
   ],
   "host_permissions": [
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://*.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://*.gstatic.com/*"
   ],
   "action": {
     "default_popup": "src/popup/popup.html",

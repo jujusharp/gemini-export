@@ -9,7 +9,11 @@ A Chrome Extension that allows users to export their current Gemini chat history
 - **Bulk Export**: Export current historical chats in one click.
 - **Multiple Formats**: Support for Markdown (`.md`), JSON (`.json`), and Text (`.txt`).
 - **Export Types**: Choose to export just the Dialog, the Canvas, or Both.
-- **Multi-language Support**: Interface available in English and Chinese.title or date.
+- **Thread Anchor Panel (Right Side)**: Shows message anchors for quick navigation in long threads. Supports Gemini structures like `user-query` (user message) and `model-response` (assistant response).
+- **Anchor Panel Default Collapsed**: The right-side anchor panel is collapsed by default to avoid blocking normal reading. Click the panel toggle button to expand/collapse.
+- **Generated Image Export**: Automatically downloads detected generated images in the conversation.
+- **Watermark Removal (Experimental)**: Optional Gemini visible watermark removal during image export, with automatic fallback to original image download when removal is not possible.
+- **Multi-language Support**: Interface available in English and Chinese.
 - **Privacy Focused**: Runs entirely locally in your browser. No data is sent to external servers.
 
 ## Installation
@@ -28,14 +32,30 @@ A Chrome Extension that allows users to export their current Gemini chat history
     - **Language**: English or Chinese.
     - **Export Format**: Markdown, JSON, or Text.
     - **Export Type**: Dialog, Canvas, or Both.
+    - **Image Export / Watermark Removal**: Enable or disable `Remove Gemini visible watermark (experimental)`.
 4. Click **Export** (or use the floating button on the page).
 5. Wait for the process to finish and the ZIP file will automatically download.
+
+### Thread Anchor Panel
+
+- The panel is rendered on the right side of the chat page.
+- Default behavior is **collapsed** to reduce visual obstruction.
+- Click the panel toggle to expand and see all message anchors.
+- Click an anchor item to jump directly to that message.
+- Anchors are generated from detected message nodes (for example `user-query` and `model-response`).
+
+### Image Export and Watermark Removal
+
+- When generated images are present in the chat, the extension will download them alongside text export.
+- If watermark removal is enabled, images are processed before download.
+- If processing fails (for example due to fetch/CORS limitations or low detection confidence), the extension falls back to downloading the original image.
+- Export logs include watermark stats: `Watermark removed: X, fallback: Y`.
 
 ## Project Structure
 
 ```
 gemini-export/
-├── manifests.json      # Extension configuration
+├── manifest.json       # Extension configuration
 ├── assets/             # Icons and images
 ├── src/
 │   ├── background/     # Service worker (orchestration)
