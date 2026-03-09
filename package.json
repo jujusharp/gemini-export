@@ -1,0 +1,12 @@
+{
+  "name": "gemini-export",
+  "private": true,
+  "version": "1.2.0",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}

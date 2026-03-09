@@ -1,82 +1,142 @@
-# Gemini Export Chrome Extension
+# AI Chat Export Chrome Extension
 
-A Chrome Extension that allows users to export their current Gemini chat history to local storage. Supports exporting as Markdown and JSON formats, with each conversation saved as a separate file.
+Chrome extension for exporting conversations from Gemini and ChatGPT as Markdown, JSON, or plain text. The extraction layer is platform-aware, while formatting, download, and packaging stay shared.
 
-![Gemini Export Screenshot](assets/screen.webp)
+![AI Chat Export Screenshot](assets/screen.webp)
 
-## Features
+## What It Supports
 
-- **Bulk Export**: Export current historical chats in one click.
-- **Multiple Formats**: Support for Markdown (`.md`), JSON (`.json`), and Text (`.txt`).
-- **Export Types**: Choose to export just the Dialog, the Canvas, or Both.
-- **Thread Anchor Panel (Right Side)**: Shows message anchors for quick navigation in long threads. Supports Gemini structures like `user-query` (user message) and `model-response` (assistant response).
-- **Anchor Panel Default Collapsed**: The right-side anchor panel is collapsed by default to avoid blocking normal reading. Click the panel toggle button to expand/collapse.
-- **Generated Image Export**: Automatically downloads detected generated images in the conversation.
-- **Watermark Removal (Experimental)**: Optional Gemini visible watermark removal during image export, with automatic fallback to original image download when removal is not possible.
-- **Multi-language Support**: Interface available in English and Chinese.
-- **Privacy Focused**: Runs entirely locally in your browser. No data is sent to external servers.
+- Gemini conversation export
+- ChatGPT conversation export
+- Markdown, JSON, and TXT output
+- Dialog-only export on both platforms
+- Gemini canvas export
+- Gemini generated-image export with optional visible watermark removal
+- Thread anchor panel for long conversations
+- English and Chinese popup UI
+
+## Platform Behavior
+
+### Gemini
+
+- Extracts user messages, assistant responses, and Gemini thought blocks when available
+- Supports `Dialog`, `Canvas`, and `Both`
+- Can export generated images
+- Can optionally attempt visible watermark removal during image export
+- File naming prefers Gemini page metadata and falls back to the first user prompt
+
+### ChatGPT
+
+- Extracts turns from `article [class*="group/turn-messages"]`
+- Detects user messages via `.user-message-bubble-color`
+- Supports `Dialog` export
+- Reuses the shared anchor panel and export pipeline
+- File naming prefers `document.title`, which maps better to ChatGPT thread titles than DOM headings
+
+## Architecture
+
+The codebase is split into two layers:
+
+1. Platform layer
+   - URL detection
+   - platform capability flags
+   - DOM selectors
+   - title extraction rules
+   - scroller and anchor hints
+
+2. Shared export layer
+   - markdown conversion
+   - export formatting
+   - file download
+   - popup settings
+   - floating export UI
+
+This keeps Gemini-specific and ChatGPT-specific DOM logic out of the shared export pipeline.
 
 ## Installation
 
-1. Clone this repository or download the source code.
-2. Open Google Chrome and navigate to `chrome://extensions/`.
-3. Enable **Developer mode** in the top right corner.
-4. Click **Load unpacked**.
-5. Select the directory where you downloaded this project.
+1. Clone this repository.
+2. Open `chrome://extensions/`.
+3. Enable `Developer mode`.
+4. Click `Load unpacked`.
+5. Select this repository directory.
 
 ## Usage
 
-1. Open [Gemini](https://gemini.google.com/).
-2. Click the extension icon in the toolbar.
-3. Configure your settings:
-    - **Language**: English or Chinese.
-    - **Export Format**: Markdown, JSON, or Text.
-    - **Export Type**: Dialog, Canvas, or Both.
-    - **Image Export / Watermark Removal**: Enable or disable `Remove Gemini visible watermark (experimental)`.
-4. Click **Export** (or use the floating button on the page).
-5. Wait for the process to finish and the ZIP file will automatically download.
+1. Open a supported conversation page on [Gemini](https://gemini.google.com/) or [ChatGPT](https://chatgpt.com/).
+2. Open the extension popup and choose:
+   - language
+   - export format
+   - export type
+   - Gemini watermark-removal option if needed
+3. Click the floating `Export` button on the page.
+4. Wait for the download to complete.
 
-### Thread Anchor Panel
+## Export Types
 
-- The panel is rendered on the right side of the chat page.
-- Default behavior is **collapsed** to reduce visual obstruction.
-- Click the panel toggle to expand and see all message anchors.
-- Click an anchor item to jump directly to that message.
-- Anchors are generated from detected message nodes (for example `user-query` and `model-response`).
+- `Dialog`: exports the conversation turns
+- `Canvas`: exports Gemini canvas content only
+- `Both`: combines Gemini dialog and canvas content when both exist
 
-### Image Export and Watermark Removal
+For ChatGPT, `Canvas` and `Both` currently degrade to dialog-only behavior because ChatGPT canvas/artifact support has not been implemented in this extension.
 
-- When generated images are present in the chat, the extension will download them alongside text export.
-- If watermark removal is enabled, images are processed before download.
-- If processing fails (for example due to fetch/CORS limitations or low detection confidence), the extension falls back to downloading the original image.
-- Export logs include watermark stats: `Watermark removed: X, fallback: Y`.
+## Thread Anchor Panel
 
-## Project Structure
-
-```
-gemini-export/
-├── manifest.json       # Extension configuration
-├── assets/             # Icons and images
-├── src/
-│   ├── background/     # Service worker (orchestration)
-│   ├── content/        # Content scripts (DOM interaction)
-│   ├── popup/          # UI for the extension
-│   └── lib/            # Utilities (formatting, zipping)
-└── README.md           # This file
-```
-
-## Reference
-
-This project is inspired by and references [gemini_chat_export](https://github.com/Sxuan-Coder/gemini_chat_export).
-
-## Tech Stack
-
-- **HTML/CSS/JS**: Core technologies.
-- **Manifest V3**: The latest Chrome Extension standard.
-- **JSZip**: For bundling files into a single download.
+- Rendered on supported pages as a right-side panel
+- Collapsed by default
+- Shows turn snippets for quick navigation
+- Uses platform-specific message sources under a shared UI
 
 ## Development
 
-1. Make changes to the code in `src/`.
-2. Go to `chrome://extensions/` and click the refresh icon on the Gemini Export card.
-3. Test the changes on the Gemini website.
+### Project Structure
+
+```text
+gemini-export/
+├── manifest.json
+├── assets/
+├── src/
+│   ├── background/
+│   ├── content/
+│   │   └── modules/
+│   │       ├── platforms.js
+│   │       ├── conversation_extractor.js
+│   │       ├── project_utils.js
+│   │       ├── scroller.js
+│   │       └── ...
+│   ├── popup/
+│   └── lib/
+├── tests/
+└── README.md
+```
+
+### Local Verification
+
+Install test dependencies once:
+
+```bash
+npm install
+```
+
+Run tests:
+
+```bash
+npm test
+```
+
+### Manual Checks
+
+- Refresh the unpacked extension in `chrome://extensions/`
+- Verify export on a Gemini conversation
+- Verify export on a ChatGPT conversation URL like `https://chatgpt.com/c/<thread-id>`
+- Check that ChatGPT filenames use the page title
+
+## Notes
+
+- All extraction runs locally in the browser.
+- No conversation data is uploaded by the extension.
+- ChatGPT DOM structure can change without notice; selectors are centralized so future updates stay local to the platform layer.
+
+## Reference
+
+Inspired by [gemini_chat_export](https://github.com/Sxuan-Coder/gemini_chat_export).

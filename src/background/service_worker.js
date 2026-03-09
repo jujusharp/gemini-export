@@ -148,12 +148,12 @@ function convertToMarkdown(content, chat) {
 }
 
 function sanitizeFileNameSegment(name) {
-    return (name || 'GeminiChat')
+    return (name || 'AIChat')
         .replace(/[\\/:\*\?"<>\|]/g, '_')
         .replace(/\s+/g, '_')
         .replace(/_+/g, '_')
         .replace(/^_+|_+$/g, '')
-        .slice(0, 60) || 'GeminiChat';
+        .slice(0, 60) || 'AIChat';
 }
 
 function normalizeImageExtension(ext) {
@@ -187,7 +187,7 @@ function guessImageExtensionFromUrl(url) {
 }
 
 function buildImageFilename(baseName, timestamp, index, image) {
-    const safeBaseName = sanitizeFileNameSegment(baseName || 'GeminiChat');
+    const safeBaseName = sanitizeFileNameSegment(baseName || 'AIChat');
     const safeTimestamp = sanitizeFileNameSegment(timestamp || '').slice(0, 40) ||
         new Date().toISOString().replace(/[:.]/g, '-');
     const extension = normalizeImageExtension(image?.extension || guessImageExtensionFromUrl(image?.url || ''));
@@ -305,7 +305,7 @@ async function handleImageBatchDownload(payload) {
         return { downloaded: 0, failed: 0, total: 0 };
     }
 
-    const baseName = payload?.baseName || 'GeminiChat';
+    const baseName = payload?.baseName || 'AIChat';
     const timestamp = payload?.timestamp || '';
     const removeWatermark = payload?.removeWatermark !== false;
     const fallbackToOriginal = payload?.fallbackToOriginal !== false;

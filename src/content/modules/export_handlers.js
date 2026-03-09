@@ -15,7 +15,7 @@
             : (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
         const getProjectName = typeof options.getProjectName === 'function'
             ? options.getProjectName
-            : () => 'GeminiChat';
+            : () => 'AIChat';
         const extractCanvasContent = typeof options.extractCanvasContent === 'function'
             ? options.extractCanvasContent
             : () => [];

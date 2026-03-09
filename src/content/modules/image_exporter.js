@@ -31,12 +31,12 @@
         }
 
         function sanitizeFileNameSegment(name) {
-            return (name || 'GeminiChat')
+            return (name || 'AIChat')
                 .replace(/[\\/:\*\?"<>\|]/g, '_')
                 .replace(/\s+/g, '_')
                 .replace(/_+/g, '_')
                 .replace(/^_+|_+$/g, '')
-                .slice(0, 60) || 'GeminiChat';
+                .slice(0, 60) || 'AIChat';
         }
 
         function normalizeImageExtension(ext) {

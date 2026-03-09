@@ -1,7 +1,7 @@
 // Popup Translations
 const translations = {
   en: {
-    extName: "Gemini Exporter",
+    extName: "AI Chat Exporter",
     settingsTitle: "Settings & Configuration",
     exportFormat: "Export Format",
     fmtTxt: "Text", // "Markdown" & "JSON" are universal enough or allow defaults
@@ -11,15 +11,15 @@ const translations = {
     typeBoth: "Both",
     typeBothHint: "\"Both\" will attempt to download dialogue and canvas content if available.",
     watermarkRemoval: "Image Export",
-    watermarkRemovalLabel: "Remove Gemini visible watermark (experimental)",
-    watermarkRemovalHint: "When enabled, exported generated images will attempt visible watermark removal; if processing fails, original images are downloaded.",
+    watermarkRemovalLabel: "Remove Gemini visible watermark (experimental, Gemini only)",
+    watermarkRemovalHint: "When enabled on Gemini, exported generated images will attempt visible watermark removal; if processing fails, original images are downloaded.",
     usageHints: "Usage Hints",
-    usageHintsText: "• Scroll to the top of the chat before exporting.<br>• Settings are saved automatically.<br>• Click the floating <b>Export</b> button on the page to specific download.",
+    usageHintsText: "• Scroll to the top of the chat before exporting.<br>• Settings are saved automatically.<br>• Open Gemini or ChatGPT and click the floating <b>Export</b> button on the page.",
     language: "Language",
     settingsSaved: "Settings saved"
   },
   zh: {
-    extName: "Gemini 导出助手",
+    extName: "AI 对话导出助手",
     settingsTitle: "设置与配置",
     exportFormat: "导出格式",
     fmtTxt: "纯文本",
@@ -29,10 +29,10 @@ const translations = {
     typeBoth: "组合",
     typeBothHint: "“组合”模式将尝试同时下载对话内容和 Canvas 内容(如有)。",
     watermarkRemoval: "图片导出",
-    watermarkRemovalLabel: "导出时去除 Gemini 可见水印（实验性）",
-    watermarkRemovalHint: "开启后会尝试去除导出生成图中的可见水印；若处理失败将回退为原图下载。",
+    watermarkRemovalLabel: "导出时去除 Gemini 可见水印（实验性，仅 Gemini）",
+    watermarkRemovalHint: "在 Gemini 页面开启后，会尝试去除导出生成图中的可见水印；若处理失败将回退为原图下载。",
     usageHints: "使用提示",
-    usageHintsText: "• 导出前建议先滚动到对话顶部。<br>• 设置会自动保存。<br>• 点击页面右侧悬浮的 <b>Export</b> 按钮开始下载。",
+    usageHintsText: "• 导出前建议先滚动到对话顶部。<br>• 设置会自动保存。<br>• 打开 Gemini 或 ChatGPT 页面后，点击右侧悬浮的 <b>Export</b> 按钮开始下载。",
 
     language: "语言",
     settingsSaved: "设置已保存"

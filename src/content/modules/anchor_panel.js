@@ -15,6 +15,9 @@
         const getSelectors = typeof options.getSelectors === 'function'
             ? options.getSelectors
             : () => ({});
+        const getPlatform = typeof options.getPlatform === 'function'
+            ? options.getPlatform
+            : () => ({ id: 'generic', messageSelectors: {} });
         const getScrollHost = typeof options.getScrollHost === 'function'
             ? options.getScrollHost
             : () => window;
@@ -62,11 +65,15 @@
         }
 
         function getCurrentSelectors() {
+            const platform = getPlatform() || {};
+            const platformSelectors = platform.messageSelectors || {};
             const selectors = getSelectors() || {};
             return {
-                userContainer: selectors.userContainer || 'user-query',
-                modelContainer: selectors.modelContainer || 'model-response',
-                userText: selectors.userText || '.query-text'
+                ...platformSelectors,
+                ...selectors,
+                userContainer: selectors.userContainer || platformSelectors.userContainer || 'user-query',
+                modelContainer: selectors.modelContainer || platformSelectors.modelContainer || 'model-response',
+                userText: selectors.userText || platformSelectors.userText || '.query-text'
             };
         }
 
@@ -238,6 +245,13 @@
         }
 
         function getThreadRootElement() {
+            const platform = getPlatform() || {};
+            if (platform.id === 'chatgpt') {
+                return document.querySelector('main') || document.body;
+            }
+            if (platform.id === 'aistudio') {
+                return document.querySelector('main') || document.body;
+            }
             return document.querySelector('#chat-history') ||
                 document.querySelector('chat-history') ||
                 document.querySelector('chat-window-content') ||
@@ -249,8 +263,27 @@
             const root = getThreadRootElement();
             if (!root) return [];
 
+            const platform = getPlatform() || {};
             const { userContainer, modelContainer } = getCurrentSelectors();
             const messageNodes = [];
+
+            if (platform.id === 'chatgpt') {
+                const selectors = getCurrentSelectors();
+                const turnSelector = selectors.turn || 'article [class*="group/turn-messages"]';
+                const userBubble = selectors.userBubble || '.user-message-bubble-color';
+
+                try {
+                    const turns = Array.from(root.querySelectorAll(turnSelector));
+                    turns.forEach((node) => {
+                        const role = node.matches(userBubble) || node.querySelector(userBubble) ? 'user' : 'model';
+                        messageNodes.push({ node, role });
+                    });
+                    return messageNodes;
+                } catch (e) {
+                    console.warn('Gemini Export: 解析 ChatGPT 消息节点失败', e);
+                }
+            }
+
             const messageSelector = `${userContainer}, ${modelContainer}`;
 
             try {
@@ -285,9 +318,19 @@
         function getMessageAnchorSnippet(node, role) {
             if (!node) return role === 'user' ? getTextValue('anchorUserFallback') : getTextValue('anchorModelFallback');
 
+            const platform = getPlatform() || {};
             const { userText } = getCurrentSelectors();
             let source = node;
-            if (role === 'user') {
+            if (platform.id === 'chatgpt') {
+                const selectors = getCurrentSelectors();
+                if (role === 'user') {
+                    source = node.matches(selectors.userBubble || '.user-message-bubble-color')
+                        ? node
+                        : node.querySelector(selectors.userBubble || '.user-message-bubble-color') || node;
+                } else {
+                    source = node.querySelector(selectors.assistantText || '.assistant-content, .markdown, [class*="markdown"], .prose') || node;
+                }
+            } else if (role === 'user') {
                 source = node.querySelector(userText) ||
                     node.querySelector('.query-text-line, .query-text p') ||
                     node;

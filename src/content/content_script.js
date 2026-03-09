@@ -65,6 +65,9 @@
     const t = window.GeminiExportI18n?.getTranslations
         ? window.GeminiExportI18n.getTranslations({ language: navigator.language })
         : {};
+    const currentPlatform = window.GeminiExportPlatforms?.detectPlatformFromLocation
+        ? window.GeminiExportPlatforms.detectPlatformFromLocation(window.location)
+        : { id: 'generic', label: 'Chat', defaultProjectName: 'AIChat', messageSelectors: {}, capabilities: { canvas: false } };
 
     const exportTimeout = 3000;
     const SCROLL_DELAY_MS = 1000;
@@ -75,17 +78,7 @@
     if (!window.__GEMINI_EXPORT_FORMAT) { window.__GEMINI_EXPORT_FORMAT = 'md'; }
 
     // --- 动态选择器配置 ---
-    const DEFAULT_SELECTORS = {
-        userContainer: 'user-query',
-        modelContainer: 'model-response',
-        userLine: '.query-text-line',
-        userParagraph: '.query-text p',
-        userText: '.query-text',
-        modelContent: '.response-container-content, model-response',
-        modelMarkdown: '.model-response-text .markdown',
-        modelThoughts: 'model-thoughts',
-        modelThoughtsBody: '.thoughts-body, .thoughts-content'
-    };
+    const DEFAULT_SELECTORS = { ...(currentPlatform.messageSelectors || {}) };
 
     const loadSelectorConfig = window.GeminiExportBootstrap?.loadSelectorConfig;
     let SELECTORS = typeof loadSelectorConfig === 'function'
@@ -149,16 +142,16 @@
     function getProjectName() {
         const getter = window.GeminiExportProjectUtils?.getProjectName;
         if (typeof getter === 'function') {
-            return getter();
+            return getter({ platform: currentPlatform, selectors: SELECTORS });
         }
-        return 'GeminiChat';
+        return currentPlatform.defaultProjectName || 'AIChat';
     }
 
 
     function getMainScrollerElement() {
         const resolver = window.GeminiExportScroller?.getMainScrollerElement;
         if (typeof resolver === 'function') {
-            return resolver();
+            return resolver({ platform: currentPlatform, selectors: SELECTORS });
         }
         console.warn('Gemini Export: scroller module not loaded, fallback to document root scroller.');
         return document.scrollingElement || document.documentElement || document.body;
@@ -172,6 +165,8 @@
         }
 
         return extractor.extractDataIncrementalGemini({
+            document,
+            platform: currentPlatform,
             collectedData,
             selectors: SELECTORS,
             updateStatus,
@@ -183,11 +178,14 @@
     function extractDataIncremental_Dispatch() {
         const extractor = window.GeminiExportConversationExtractor;
         if (!extractor || typeof extractor.extractDataIncrementalDispatch !== 'function') {
-            if (document.querySelector('#chat-history .conversation-container')) return extractDataIncremental_Gemini();
-            return extractDataIncremental_AiStudio();
+            if (currentPlatform.id === 'gemini') return extractDataIncremental_Gemini();
+            if (currentPlatform.id === 'aistudio') return extractDataIncremental_AiStudio();
+            return false;
         }
 
         return extractor.extractDataIncrementalDispatch({
+            document,
+            platform: currentPlatform,
             collectedData,
             selectors: SELECTORS,
             updateStatus,
@@ -222,11 +220,12 @@
             t,
             cleanupMarkdown,
             GM_addStyle,
+            getPlatform: () => currentPlatform,
             getSelectors: () => SELECTORS,
             getScrollHost: () => {
                 const hostGetter = window.GeminiExportScroller?.getAnchorScrollHost;
                 if (typeof hostGetter === 'function') {
-                    return hostGetter();
+                    return hostGetter({ platform: currentPlatform, selectors: SELECTORS });
                 }
                 const fallbackScroller = getMainScrollerElement();
                 if (!fallbackScroller || fallbackScroller === document.documentElement || fallbackScroller === document.body || fallbackScroller === document.scrollingElement) {
@@ -328,6 +327,7 @@
         exportPipeline = factory({
             t,
             htmlToMarkdown,
+            getPlatform: () => currentPlatform,
             getProjectName,
             getCurrentTimestamp,
             getExportMode: () => (window.__GEMINI_EXPORT_FORMAT || 'txt').toLowerCase()
@@ -343,14 +343,8 @@
         }
 
         const sorted = [];
-        if (document.querySelector('#chat-history .conversation-container')) {
-            const cs = document.querySelectorAll('#chat-history .conversation-container');
-            cs.forEach((c) => { if (collectedData.has(c)) sorted.push(collectedData.get(c)); });
-        } else {
-            const turns = document.querySelectorAll('ms-chat-turn');
-            turns.forEach((turn) => { if (collectedData.has(turn)) sorted.push(collectedData.get(turn)); });
-        }
-        return sorted;
+        collectedData.forEach((value) => sorted.push(value));
+        return sorted.sort((a, b) => Number(a?.domOrder || 0) - Number(b?.domOrder || 0));
     }
 
     function getExportDispatcher() {
@@ -395,7 +389,7 @@
             getMainScrollerElement,
             updateStatus,
             extractDataIncrementalDispatch: extractDataIncremental_Dispatch,
-            extractDataIncrementalAiStudio: extractDataIncremental_AiStudio,
+            extractDataIncrementalAiStudio: extractDataIncremental_Dispatch,
             alertFn: (message) => alert(message),
             getIsScrolling: () => isScrolling,
             setIsScrolling: (value) => { isScrolling = Boolean(value); },
@@ -443,7 +437,7 @@
                 noChangeCounter = 0;
             },
             autoScrollDown: autoScrollDown_AiStudio,
-            extractDataIncrementalAiStudio: extractDataIncremental_AiStudio,
+            extractDataIncrementalAiStudio: extractDataIncremental_Dispatch,
             collectScrollData: collectScrollDataForExport,
             formatCombinedDataForExport,
             formatAndExport,
@@ -558,6 +552,8 @@
         }
 
         return extractor.extractDataIncrementalAiStudio({
+            document,
+            platform: currentPlatform,
             collectedData,
             updateStatus,
             scrollCount,
@@ -608,7 +604,7 @@
     }
 
     // --- 脚本初始化入口 ---
-    console.log("Gemini_Chat_Export 导出脚本 (v1.0.7): 等待页面加载 (2.5秒)...");
+    console.log(`Chat Export 脚本 (${currentPlatform.label || 'Chat'}): 等待页面加载 (2.5秒)...`);
     startThemeSync();
     setTimeout(createUI, 2500);
 

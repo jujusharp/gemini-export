@@ -6,9 +6,12 @@
         const htmlToMarkdown = typeof options.htmlToMarkdown === 'function'
             ? options.htmlToMarkdown
             : (element) => String(element?.innerText || '').trim();
+        const getPlatform = typeof options.getPlatform === 'function'
+            ? options.getPlatform
+            : () => ({ id: 'generic', capabilities: { canvas: false } });
         const getProjectName = typeof options.getProjectName === 'function'
             ? options.getProjectName
-            : () => 'GeminiChat';
+            : () => 'AIChat';
         const getCurrentTimestamp = typeof options.getCurrentTimestamp === 'function'
             ? options.getCurrentTimestamp
             : () => new Date().toISOString().replace(/[:.]/g, '-');
@@ -43,6 +46,11 @@
         }
 
         function extractCanvasContent() {
+            const platform = getPlatform();
+            if (!platform?.capabilities?.canvas) {
+                return [];
+            }
+
             console.log(t.logExtractingCanvas || 'Extracting Canvas content...');
             const canvasData = [];
             const seenContents = new Set();
@@ -392,22 +400,10 @@
         }
 
         function collectSortedData(collectedData) {
-            const sorted = [];
-            if (!collectedData || typeof collectedData.has !== 'function') return sorted;
-
-            if (document.querySelector('#chat-history .conversation-container')) {
-                const containers = document.querySelectorAll('#chat-history .conversation-container');
-                containers.forEach((container) => {
-                    if (collectedData.has(container)) sorted.push(collectedData.get(container));
-                });
-                return sorted;
-            }
-
-            const turns = document.querySelectorAll('ms-chat-turn');
-            turns.forEach((turn) => {
-                if (collectedData.has(turn)) sorted.push(collectedData.get(turn));
+            if (!collectedData || typeof collectedData.values !== 'function') return [];
+            return Array.from(collectedData.values()).sort((a, b) => {
+                return Number(a?.domOrder || 0) - Number(b?.domOrder || 0);
             });
-            return sorted;
         }
 
         function triggerBlobDownload(pack) {
